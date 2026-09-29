@@ -4,9 +4,10 @@ const cors = require("cors");
 const axios = require("axios");
 const cheerio = require("cheerio");
 const puppeteer = require("puppeteer");
-const { ApifyClient } = require("apify-client");
+// const { ApifyClient } = require("apify-client");
 const { GoogleGenAI } = require("@google/genai");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const crypto = require("crypto");
 const learningEngine = require("./services/learningEngine");
 const vectorSearch = require("./services/vectorSearch");
 const buildRagContext = require("./services/ragEngine");
@@ -33,8 +34,120 @@ const {
 const { extractCode, extractAnalysis, extractIntent } = require("./aiHelper");
 
 const app = express();
-app.use(cors());
+// app.use(cors());
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "http://localhost:5174",
+      "https://app.affilai.com",
+    ],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 app.use(express.json());
+
+/* =========================================================
+   LANDING PAGE DEPLOYMENT HELPERS
+========================================================= */
+
+const MAX_LANDING_HTML_SIZE = 2 * 1024 * 1024; // 2 MB
+
+function slugify(value = "") {
+  return String(value)
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
+}
+
+function generateRandomSlug() {
+  return crypto.randomBytes(5).toString("hex");
+}
+
+function createLandingSlug(name = "landing-page") {
+  const base = slugify(name) || "landing-page";
+  return `${base}-${generateRandomSlug()}`;
+}
+
+function isValidHttpUrl(value) {
+  try {
+    const url = new URL(value);
+
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function escapeHtmlAttribute(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/'/g, "&#039;");
+}
+
+function prepareLandingHTML(html, affiliateLink) {
+  if (!html || typeof html !== "string") {
+    throw new Error("Invalid landing page HTML");
+  }
+
+  if (Buffer.byteLength(html, "utf8") > MAX_LANDING_HTML_SIZE) {
+    throw new Error("Landing page HTML is too large");
+  }
+
+  let finalHTML = html;
+
+  // Replace affiliate link placeholder
+  if (affiliateLink) {
+    finalHTML = finalHTML.replaceAll(
+      "{{AFFILIATE_LINK}}",
+      escapeHtmlAttribute(affiliateLink),
+    );
+  }
+
+  // Prevent accidental unresolved placeholder
+  finalHTML = finalHTML.replaceAll("{{AFFILIATE_LINK}}", "#");
+
+  return finalHTML;
+}
+
+// =====================================================
+// CREATE PUBLIC LANDING PAGE SLUG
+// Example:
+// insurance-117bc58e2a
+// finance-a82f91c321
+// travel-91ab72cd10
+// =====================================================
+function createPublicLandingSlug(intent = "") {
+  const cleanIntent =
+    typeof intent === "string"
+      ? intent
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 40)
+      : "";
+
+  // If intent is missing
+  const prefix = cleanIntent || "landing";
+
+  // 10-character unique hexadecimal ID
+  const uniqueId = crypto.randomBytes(5).toString("hex");
+
+  return `${prefix}-${uniqueId}`;
+}
+
+/* =========================================================
+   AI setup 
+   ========================================================= */
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
@@ -477,9 +590,25 @@ async function run() {
       .db("affiliate-ai")
       .collection("offer-cache");
 
-    // const trendingOffersCollection = client
-    //   .db("affiliate-ai")
-    //   .collection("trending-offers");
+    const landingPagesCollection = client
+      .db("affiliate-ai")
+      .collection("landing-pages");
+
+    // Unique slug index
+    await landingPagesCollection.createIndex({ slug: 1 }, { unique: true });
+
+    // Useful for user's landing page dashboard later
+    await landingPagesCollection.createIndex({
+      createdAt: -1,
+    });
+
+    await landingPagesCollection.createIndex({
+      updatedAt: -1,
+    });
+
+    /* =========================================================
+   Generate LANDING PAGE
+   ========================================================= */
 
     app.post("/generate", async (req, res) => {
       try {
@@ -502,6 +631,478 @@ async function run() {
         res.send({ html, intent, score, analysis });
       } catch (err) {
         res.status(500).send({ error: "AI failed" });
+      }
+    });
+
+    /* =========================================================
+   DEPLOY LANDING PAGE
+   ========================================================= */
+
+    app.post("/deploy", async (req, res) => {
+      try {
+        const {
+          name,
+          html,
+          affiliateLink = "",
+          slug: existingSlug = null,
+          intent = "",
+          email,
+        } = req.body;
+
+        // =====================================================
+        // VALIDATION
+        // =====================================================
+
+        if (!html || typeof html !== "string") {
+          return res.status(400).json({
+            success: false,
+            error: "Landing page HTML is required",
+          });
+        }
+
+        if (Buffer.byteLength(html, "utf8") > MAX_LANDING_HTML_SIZE) {
+          return res.status(413).json({
+            success: false,
+            error: "Landing page HTML is too large. Maximum size is 2 MB.",
+          });
+        }
+
+        if (affiliateLink && !isValidHttpUrl(affiliateLink)) {
+          return res.status(400).json({
+            success: false,
+            error: "Affiliate link must be a valid HTTP or HTTPS URL.",
+          });
+        }
+
+        // =====================================================
+        // PAGE NAME
+        // =====================================================
+
+        const pageName =
+          typeof name === "string" && name.trim()
+            ? name.trim().slice(0, 120)
+            : "AI Landing Page";
+
+        // =====================================================
+        // INTENT
+        // =====================================================
+
+        const cleanIntent =
+          typeof intent === "string" ? intent.trim().slice(0, 60) : "";
+
+        // =====================================================
+        // PREPARE HTML
+        // =====================================================
+
+        const finalHTML = prepareLandingHTML(html, affiliateLink);
+
+        const now = new Date();
+
+        // =====================================================
+        // BASE URL
+        // =====================================================
+
+        const baseURL =
+          process.env.PUBLIC_BASE_URL ||
+          `http://localhost:${process.env.PORT || 5000}`;
+
+        const cleanBaseURL = baseURL.replace(/\/$/, "");
+
+        // =====================================================
+        // UPDATE EXISTING PAGE
+        // =====================================================
+
+        if (existingSlug) {
+          const existingPage = await landingPagesCollection.findOne({
+            slug: existingSlug,
+            email: email,
+          });
+
+          if (!existingPage) {
+            return res.status(404).json({
+              success: false,
+              error: "Landing page not found",
+            });
+          }
+
+          await landingPagesCollection.updateOne(
+            {
+              slug: existingSlug,
+              email: email,
+            },
+            {
+              $set: {
+                name: pageName,
+                html: finalHTML,
+                affiliateLink: affiliateLink || "",
+                intent: cleanIntent,
+                status: "published",
+                updatedAt: now,
+              },
+            },
+          );
+
+          // IMPORTANT:
+          // Existing slug stays unchanged
+          const liveURL = `${cleanBaseURL}/${existingSlug}`;
+
+          return res.json({
+            success: true,
+            action: "updated",
+            slug: existingSlug,
+            intent: cleanIntent,
+            url: liveURL,
+          });
+        }
+
+        // =====================================================
+        // CREATE NEW PAGE
+        // =====================================================
+
+        let slug;
+        let inserted = false;
+
+        // =====================================================
+        // GENERATE UNIQUE SLUG
+        //
+        // Example:
+        // insurance-117bc58e2a
+        // =====================================================
+
+        for (let attempt = 0; attempt < 10; attempt++) {
+          slug = createPublicLandingSlug(cleanIntent);
+
+          try {
+            await landingPagesCollection.insertOne({
+              name: pageName,
+
+              // Example:
+              // insurance-117bc58e2a
+              slug,
+
+              html: finalHTML,
+
+              affiliateLink: affiliateLink || "",
+
+              intent: cleanIntent,
+
+              status: "published",
+
+              // Analytics
+              views: 0,
+              clicks: 0,
+
+              createdAt: now,
+              updatedAt: now,
+
+              email,
+            });
+
+            inserted = true;
+
+            break;
+          } catch (error) {
+            // Duplicate slug
+            if (error?.code === 11000) {
+              continue;
+            }
+
+            throw error;
+          }
+        }
+
+        // =====================================================
+        // FAILED TO CREATE UNIQUE SLUG
+        // =====================================================
+
+        if (!inserted) {
+          return res.status(500).json({
+            success: false,
+            error: "Could not generate a unique landing page URL",
+          });
+        }
+
+        // =====================================================
+        // LIVE URL
+        // =====================================================
+
+        const liveURL = `${cleanBaseURL}/${slug}`;
+
+        // =====================================================
+        // SUCCESS RESPONSE
+        // =====================================================
+
+        return res.status(201).json({
+          success: true,
+          action: "created",
+          slug,
+          intent: cleanIntent,
+          url: liveURL,
+        });
+      } catch (error) {
+        console.error("Deploy landing page error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to deploy landing page",
+        });
+      }
+    });
+
+    /* =========================================================
+   GET ALL DEPLOYED LANDING PAGES
+   ========================================================= */
+
+    app.get("/landing-pages", async (req, res) => {
+      try {
+        const pages = await landingPagesCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        return res.status(200).json({
+          success: true,
+          count: pages.length,
+          pages,
+        });
+      } catch (error) {
+        console.error("Get all deployed landing pages error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to load deployed landing pages",
+        });
+      }
+    });
+
+    /* =========================================================
+   PUBLIC LANDING PAGE
+   ========================================================= */
+
+    // app.get("/l/:slug", async (req, res) => {
+    //   try {
+    //     const { slug } = req.params;
+
+    //     // =====================================================
+    //     // VALIDATE SLUG
+    //     // =====================================================
+
+    //     if (!slug || !/^[a-z0-9-]+$/i.test(slug)) {
+    //       return res.status(400).send("Invalid landing page URL");
+    //     }
+
+    //     // =====================================================
+    //     // FIND PAGE
+    //     // =====================================================
+
+    //     const page = await landingPagesCollection.findOne({
+    //       slug,
+    //       status: "published",
+    //     });
+
+    //     // =====================================================
+    //     // PAGE NOT FOUND
+    //     // =====================================================
+
+    //     if (!page) {
+    //       return res.status(404).send(`
+    //     <!DOCTYPE html>
+
+    //     <html>
+    //       <head>
+    //         <meta charset="UTF-8" />
+
+    //         <meta
+    //           name="viewport"
+    //           content="width=device-width, initial-scale=1.0"
+    //         />
+
+    //         <title>Page Not Found</title>
+    //       </head>
+
+    //       <body
+    //         style="
+    //           margin:0;
+    //           min-height:100vh;
+    //           display:flex;
+    //           align-items:center;
+    //           justify-content:center;
+    //           background:#020617;
+    //           color:white;
+    //           font-family:Arial,sans-serif;
+    //         "
+    //       >
+    //         <div
+    //           style="
+    //             text-align:center;
+    //             padding:24px;
+    //           "
+    //         >
+    //           <h1>
+    //             Landing Page Not Found
+    //           </h1>
+
+    //           <p
+    //             style="
+    //               color:#94a3b8;
+    //             "
+    //           >
+    //             The page you're looking for
+    //             doesn't exist.
+    //           </p>
+    //         </div>
+    //       </body>
+    //     </html>
+    //   `);
+    //     }
+
+    //     // =====================================================
+    //     // INCREMENT PAGE VIEW
+    //     // =====================================================
+
+    //     await landingPagesCollection.updateOne(
+    //       {
+    //         _id: page._id,
+    //       },
+    //       {
+    //         $inc: {
+    //           views: 1,
+    //         },
+    //       },
+    //     );
+
+    //     // =====================================================
+    //     // RESPONSE HEADERS
+    //     // =====================================================
+
+    //     res.setHeader("Content-Type", "text/html; charset=utf-8");
+
+    //     res.setHeader("Cache-Control", "public, max-age=60");
+
+    //     // =====================================================
+    //     // SEND LANDING PAGE
+    //     // =====================================================
+
+    //     return res.send(page.html);
+    //   } catch (error) {
+    //     console.error("Landing page render error:", error);
+
+    //     return res.status(500).send("Unable to load landing page");
+    //   }
+    // });
+
+    app.get("/:slug", async (req, res) => {
+      try {
+        const { slug } = req.params;
+
+        // =====================================================
+        // VALIDATE SLUG
+        // =====================================================
+
+        if (!slug || !/^[a-z0-9-]+$/i.test(slug)) {
+          return res.status(400).send("Invalid landing page URL");
+        }
+
+        // =====================================================
+        // FIND PAGE
+        // =====================================================
+
+        const page = await landingPagesCollection.findOne({
+          slug,
+          status: "published",
+        });
+
+        // =====================================================
+        // PAGE NOT FOUND
+        // =====================================================
+
+        if (!page) {
+          return res.status(404).send(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="UTF-8" />
+
+            <meta
+              name="viewport"
+              content="width=device-width, initial-scale=1.0"
+            />
+
+            <title>Page Not Found</title>
+          </head>
+
+          <body
+            style="
+              margin:0;
+              min-height:100vh;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+              background:#020617;
+              color:white;
+              font-family:Arial,sans-serif;
+            "
+          >
+
+            <div
+              style="
+                text-align:center;
+                padding:24px;
+              "
+            >
+
+              <h1>
+                Landing Page Not Found
+              </h1>
+
+              <p
+                style="
+                  color:#94a3b8;
+                "
+              >
+                The page you're looking for
+                doesn't exist.
+              </p>
+
+            </div>
+
+          </body>
+        </html>
+      `);
+        }
+
+        // =====================================================
+        // INCREMENT PAGE VIEW
+        // =====================================================
+
+        await landingPagesCollection.updateOne(
+          {
+            _id: page._id,
+          },
+          {
+            $inc: {
+              views: 1,
+            },
+          },
+        );
+
+        // =====================================================
+        // RESPONSE HEADERS
+        // =====================================================
+
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+
+        res.setHeader("Cache-Control", "public, max-age=60");
+
+        // =====================================================
+        // SEND LANDING PAGE
+        // =====================================================
+
+        return res.send(page.html);
+      } catch (error) {
+        console.error("Landing page render error:", error);
+
+        return res.status(500).send("Unable to load landing page");
       }
     });
 
@@ -986,13 +1587,7 @@ async function run() {
       }
     });
 
-
-
-    
-    // no need this Api 
-
-
-
+    // no need this Api
 
     app.post("/trending-offers", async (req, res) => {
       try {
@@ -1033,7 +1628,6 @@ async function run() {
         console.dir(result, { depth: null });
 
         const decisionData = createTikTokDecisionData(result.ads);
-
 
         // console.log("TikTok Decision Data:");
 
