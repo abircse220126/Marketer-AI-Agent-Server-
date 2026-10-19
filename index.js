@@ -1045,6 +1045,49 @@ async function run() {
       }
     });
 
+    // =====================================================
+    // DELETE LANDING PAGE
+    // =====================================================
+    app.delete("/landing-pages/:slug", async (req, res) => {
+      try {
+        const { slug } = req.params;
+        const { email } = req.body;
+
+        if (!slug || !email) {
+          return res.status(400).json({
+            success: false,
+            error: "Landing page slug and email are required",
+          });
+        }
+
+        const result = await landingPagesCollection.deleteOne({
+          slug,
+          email,
+        });
+
+        if (result.deletedCount === 0) {
+          return res.status(404).json({
+            success: false,
+            error: "Landing page not found",
+          });
+        }
+
+        return res.json({
+          success: true,
+          message: "Landing page deleted successfully",
+          slug,
+        });
+      } catch (error) {
+        console.error("Delete landing page error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to delete landing page",
+        });
+      }
+    });
+
+    
     // app.get("/l/:slug", async (req, res) => {
     //   try {
     //     const { slug } = req.params;
