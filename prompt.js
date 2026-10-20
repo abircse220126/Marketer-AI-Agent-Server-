@@ -998,9 +998,13 @@ CONVERSION SYSTEM
 ========================
 IMAGE RULE
 ========================
-
 - Use {{HERO_IMAGE}} only
 - Must be relevant to product
+- Never create a separate card background around the hero image.
+
+
+
+
 
 ========================
 USER INPUT
