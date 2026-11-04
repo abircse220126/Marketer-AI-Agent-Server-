@@ -120,10 +120,272 @@ function prepareLandingHTML(html, affiliateLink) {
   return finalHTML;
 }
 
-// =====================================================
-// FIX IMAGE URLS
-// Converts relative image paths into absolute URLs
-// =====================================================
+/* =========================================================
+   INJECT AFFILIATE TRACKER
+========================================================= */
+
+function injectTrackingScript(
+  html,
+  { campaignId = "", landingPageId = "", affiliateLink = "" } = {},
+) {
+  if (!html || typeof html !== "string") {
+    return html;
+  }
+
+  const apiBaseUrl = process.env.PUBLIC_BASE_URL || "http://localhost:5000";
+
+  const cleanApiBaseUrl = apiBaseUrl.replace(/\/$/, "");
+
+  const trackingScript = `
+<script>
+(function () {
+  "use strict";
+
+  try {
+    const API_BASE_URL = ${JSON.stringify(cleanApiBaseUrl)};
+    const CAMPAIGN_ID = ${JSON.stringify(campaignId)};
+    const LANDING_PAGE_ID = ${JSON.stringify(landingPageId)};
+    const AFFILIATE_LINK = ${JSON.stringify(affiliateLink)};
+
+    const REDIRECT_PATH = "/api/tracking/redirect";
+
+    let clickRequestPromise = null;
+    let redirectInProgress = false;
+
+    const params = new URLSearchParams(window.location.search);
+
+    const trackingParams = {
+      utm_source: params.get("utm_source"),
+      utm_medium: params.get("utm_medium"),
+      utm_campaign: params.get("utm_campaign"),
+      utm_term: params.get("utm_term"),
+      utm_content: params.get("utm_content"),
+      fbclid: params.get("fbclid"),
+      gclid: params.get("gclid"),
+      ttclid: params.get("ttclid")
+    };
+
+    // -----------------------------------
+    // 1. Create tracking click
+    // -----------------------------------
+
+    function createTrackingClick() {
+      const trackingUrl = new URL(
+        API_BASE_URL + "/api/tracking/click"
+      );
+
+      if (CAMPAIGN_ID) {
+        trackingUrl.searchParams.set("campaignId", CAMPAIGN_ID);
+      }
+
+      if (LANDING_PAGE_ID) {
+        trackingUrl.searchParams.set("landingPageId", LANDING_PAGE_ID);
+      }
+
+      Object.entries(trackingParams).forEach(([key, value]) => {
+        if (value) {
+          trackingUrl.searchParams.set(key, value);
+        }
+      });
+
+      return fetch(trackingUrl.toString(), {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store"
+      })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(
+              "Tracking API failed: " + response.status
+            );
+          }
+
+          return response.json();
+        })
+        .then((data) => {
+          if (!data || !data.success || !data.clickId) {
+            throw new Error("Invalid tracking response");
+          }
+
+          // Store the latest click ID for debugging.
+          localStorage.setItem(
+            "affilai_click_id",
+            data.clickId
+          );
+
+          localStorage.setItem(
+            "affilai_landing_page_id",
+            LANDING_PAGE_ID
+          );
+
+          if (CAMPAIGN_ID) {
+            localStorage.setItem(
+              "affilai_campaign_id",
+              CAMPAIGN_ID
+            );
+          }
+
+          console.log(
+            "AffilAI: Tracking click created",
+            data.clickId
+          );
+
+          return data.clickId;
+        });
+    }
+
+    // Create a new click ID for this page visit.
+    clickRequestPromise = createTrackingClick();
+
+    // -----------------------------------
+    // 2. Check affiliate link
+    // -----------------------------------
+
+    function isAffiliateLink(element) {
+      if (!element || !AFFILIATE_LINK) {
+        return false;
+      }
+
+      const href = element.getAttribute("href");
+
+      if (!href) {
+        return false;
+      }
+
+      try {
+        const clickedUrl = new URL(
+          href,
+          window.location.href
+        );
+
+        const affiliateUrl = new URL(
+          AFFILIATE_LINK,
+          window.location.href
+        );
+
+        return (
+          clickedUrl.origin === affiliateUrl.origin &&
+          clickedUrl.pathname === affiliateUrl.pathname
+        );
+      } catch (error) {
+        console.error(
+          "AffilAI: Invalid affiliate URL",
+          error
+        );
+
+        return false;
+      }
+    }
+
+    // -----------------------------------
+    // 3. Handle affiliate CTA click
+    // -----------------------------------
+
+    document.addEventListener(
+      "click",
+      function (event) {
+        const target = event.target;
+
+        const link =
+          target && target.closest
+            ? target.closest("a")
+            : null;
+
+        if (!link) {
+          return;
+        }
+
+        if (redirectInProgress) {
+          event.preventDefault();
+          return;
+        }
+
+        if (!isAffiliateLink(link)) {
+          console.log(
+            "AffilAI: Clicked link is not the configured affiliate link",
+            {
+              clickedHref: link.href,
+              configuredAffiliateLink: AFFILIATE_LINK
+            }
+          );
+
+          return;
+        }
+
+        // Stop normal navigation.
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        redirectInProgress = true;
+
+        console.log(
+          "AffilAI: Affiliate CTA detected",
+          link.href
+        );
+
+        // IMPORTANT:
+        // Always use the current page visit's click ID.
+        // Do not use an old ID from localStorage.
+        clickRequestPromise
+          .then((clickId) => {
+            if (!clickId) {
+              throw new Error("Missing click ID");
+            }
+
+            const redirectUrl = new URL(
+              API_BASE_URL + REDIRECT_PATH
+            );
+
+            redirectUrl.searchParams.set(
+              "clickId",
+              clickId
+            );
+
+            console.log(
+              "AffilAI: Redirecting through tracking API",
+              redirectUrl.toString()
+            );
+
+            window.location.assign(
+              redirectUrl.toString()
+            );
+          })
+          .catch((error) => {
+            console.error(
+              "AffilAI: Tracking redirect failed",
+              error
+            );
+
+            // Fallback to original affiliate URL.
+            window.location.assign(link.href);
+          });
+      },
+      true
+    );
+
+    console.log("AffilAI: Tracking script initialized", {
+      campaignId: CAMPAIGN_ID,
+      landingPageId: LANDING_PAGE_ID,
+      affiliateLink: AFFILIATE_LINK
+    });
+
+  } catch (error) {
+    console.error(
+      "AffilAI: Tracking script initialization failed",
+      error
+    );
+  }
+})();
+</script>
+`;
+
+  if (html.includes("</body>")) {
+    return html.replace("</body>", trackingScript + "\n</body>");
+  }
+
+  return html + trackingScript;
+}
 
 function makeImageUrlsAbsolute(html) {
   if (!html || typeof html !== "string") {
@@ -173,6 +435,7 @@ function makeImageUrlsAbsolute(html) {
 // finance-a82f91c321
 // travel-91ab72cd10
 // =====================================================
+
 function createPublicLandingSlug(intent = "") {
   const cleanIntent =
     typeof intent === "string"
@@ -192,6 +455,208 @@ function createPublicLandingSlug(intent = "") {
 
   return `${prefix}-${uniqueId}`;
 }
+
+/* =========================================================
+   AFFILIATE TRACKING HELPERS
+========================================================= */
+
+function generateTrackingClickId() {
+  return `cl_${crypto.randomBytes(16).toString("hex")}`;
+}
+
+function getClientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+
+  if (forwarded) {
+    return forwarded.split(",")[0].trim();
+  }
+
+  return req.headers["x-real-ip"] || req.socket?.remoteAddress || null;
+}
+
+function detectDevice(userAgent = "") {
+  const ua = userAgent.toLowerCase();
+
+  if (/tablet|ipad|playbook|silk/.test(ua)) {
+    return "tablet";
+  }
+
+  if (
+    /mobile|iphone|ipod|android|blackberry|opera mini|windows phone/.test(ua)
+  ) {
+    return "mobile";
+  }
+
+  return "desktop";
+}
+
+function detectBrowser(userAgent = "") {
+  const ua = userAgent.toLowerCase();
+
+  if (ua.includes("edg/")) {
+    return "Edge";
+  }
+
+  if (ua.includes("opr/") || ua.includes("opera")) {
+    return "Opera";
+  }
+
+  if (ua.includes("chrome") && !ua.includes("edg")) {
+    return "Chrome";
+  }
+
+  if (ua.includes("firefox")) {
+    return "Firefox";
+  }
+
+  if (ua.includes("safari") && !ua.includes("chrome")) {
+    return "Safari";
+  }
+
+  return "Unknown";
+}
+
+function detectOS(userAgent = "") {
+  const ua = userAgent.toLowerCase();
+
+  if (ua.includes("windows")) {
+    return "Windows";
+  }
+
+  if (ua.includes("iphone") || ua.includes("ipad")) {
+    return "iOS";
+  }
+
+  if (ua.includes("mac os")) {
+    return "macOS";
+  }
+
+  if (ua.includes("android")) {
+    return "Android";
+  }
+
+  if (ua.includes("linux")) {
+    return "Linux";
+  }
+
+  return "Unknown";
+}
+
+// =========================================================
+// AFFILIATE REDIRECT / TRACKING HELPERS
+// =========================================================
+
+const DEFAULT_AFFILIATE_TRACKING_PARAMETER = "aff_sub";
+
+const ALLOWED_AFFILIATE_TRACKING_PARAMETERS = new Set([
+  "aff_sub",
+  "subid",
+  "sub_id",
+  "click_id",
+  "clickid",
+  "cid",
+  "s1",
+  "s2",
+  "s3",
+  "s4",
+  "s5",
+]);
+
+function normalizeTrackingParameter(value) {
+  const parameter = String(value || DEFAULT_AFFILIATE_TRACKING_PARAMETER)
+    .trim()
+    .toLowerCase();
+
+  if (!ALLOWED_AFFILIATE_TRACKING_PARAMETERS.has(parameter)) {
+    return DEFAULT_AFFILIATE_TRACKING_PARAMETER;
+  }
+
+  return parameter;
+}
+
+function buildAffiliateTrackingUrl({
+  affiliateLink,
+  clickId,
+  trackingParameter,
+}) {
+  if (!affiliateLink || !clickId || !isValidHttpUrl(affiliateLink)) {
+    return null;
+  }
+
+  const parameter = normalizeTrackingParameter(trackingParameter);
+
+  try {
+    const url = new URL(affiliateLink);
+
+    // Add/replace the AffilAI click ID.
+    // URLSearchParams handles existing query parameters safely.
+    url.searchParams.set(parameter, clickId);
+
+    return url.toString();
+  } catch (error) {
+    console.error("❌ AFFILIATE URL BUILD ERROR:", error);
+
+    return null;
+  }
+}
+
+// =========================================================
+// AFFILIATE REDIRECT / TRACKING HELPERS
+// =========================================================
+
+// const DEFAULT_AFFILIATE_TRACKING_PARAMETER = "aff_sub";
+
+// const ALLOWED_AFFILIATE_TRACKING_PARAMETERS = new Set([
+//   "aff_sub",
+//   "subid",
+//   "sub_id",
+//   "click_id",
+//   "clickid",
+//   "cid",
+//   "s1",
+//   "s2",
+//   "s3",
+//   "s4",
+//   "s5",
+// ]);
+
+// function normalizeTrackingParameter(value) {
+//   const parameter = String(value || DEFAULT_AFFILIATE_TRACKING_PARAMETER)
+//     .trim()
+//     .toLowerCase();
+
+//   if (!ALLOWED_AFFILIATE_TRACKING_PARAMETERS.has(parameter)) {
+//     return DEFAULT_AFFILIATE_TRACKING_PARAMETER;
+//   }
+
+//   return parameter;
+// }
+
+// function buildAffiliateTrackingUrl({
+//   affiliateLink,
+//   clickId,
+//   trackingParameter,
+// }) {
+//   if (!affiliateLink || !clickId || !isValidHttpUrl(affiliateLink)) {
+//     return null;
+//   }
+
+//   const parameter = normalizeTrackingParameter(trackingParameter);
+
+//   try {
+//     const url = new URL(affiliateLink);
+
+//     // Add/replace the AffilAI click ID.
+//     // URLSearchParams handles existing query parameters safely.
+//     url.searchParams.set(parameter, clickId);
+
+//     return url.toString();
+//   } catch (error) {
+//     console.error("❌ AFFILIATE URL BUILD ERROR:", error);
+
+//     return null;
+//   }
+// }
 
 /* =========================================================
    AI setup 
@@ -654,6 +1119,49 @@ async function run() {
       updatedAt: -1,
     });
 
+    // =========================================================
+    // AFFILIATE TRACKING COLLECTIONS
+    // =========================================================
+
+    const trackingClicksCollection = client
+      .db("affiliate-ai")
+      .collection("tracking-clicks");
+
+    const trackingConversionsCollection = client
+      .db("affiliate-ai")
+      .collection("tracking-conversions");
+
+    // =========================================================
+    // TRACKING INDEXES
+    // =========================================================
+
+    await trackingClicksCollection.createIndex(
+      { clickId: 1 },
+      { unique: true },
+    );
+
+    await trackingClicksCollection.createIndex({
+      landingPageId: 1,
+      createdAt: -1,
+    });
+
+    await trackingClicksCollection.createIndex({
+      campaignId: 1,
+      createdAt: -1,
+    });
+
+    await trackingClicksCollection.createIndex({
+      createdAt: -1,
+    });
+
+    await trackingConversionsCollection.createIndex({
+      clickId: 1,
+    });
+
+    await trackingConversionsCollection.createIndex({
+      createdAt: -1,
+    });
+
     /* =========================================================
    Generate LANDING PAGE
    ========================================================= */
@@ -787,6 +1295,9 @@ async function run() {
                 name: pageName,
                 html: finalHTML,
                 affiliateLink: affiliateLink || "",
+                trackingParameter:
+                  existingPage.trackingParameter ||
+                  DEFAULT_AFFILIATE_TRACKING_PARAMETER,
                 intent: cleanIntent,
                 status: "published",
                 updatedAt: now,
@@ -827,17 +1338,20 @@ async function run() {
             await landingPagesCollection.insertOne({
               name: pageName,
 
-              // Example:
-              // insurance-117bc58e2a
               slug,
 
               html: finalHTML,
 
               affiliateLink: affiliateLink || "",
 
+              // Affiliate tracking configuration
+              trackingParameter: DEFAULT_AFFILIATE_TRACKING_PARAMETER,
+
               intent: cleanIntent,
 
               status: "published",
+
+              campaignId: null,
 
               // Analytics
               views: 0,
@@ -1037,7 +1551,22 @@ async function run() {
         // SEND LANDING PAGE
         // =====================================================
 
-        return res.send(page.html);
+        // const trackedHTML = injectTrackingScript(page.html, {
+        //   campaignId: page.campaignId || null,
+
+        //   landingPageId: page._id?.toString() || null,
+        // });
+
+        const trackedHTML = injectTrackingScript(page.html, {
+          campaignId: page.campaignId || null,
+
+          landingPageId: page._id?.toString() || null,
+
+          affiliateLink: page.affiliateLink || "",
+        });
+
+        // return res.send(page.h
+        return res.send(trackedHTML);
       } catch (error) {
         console.error("Landing page render error:", error);
 
@@ -1086,119 +1615,6 @@ async function run() {
         });
       }
     });
-
-    
-    // app.get("/l/:slug", async (req, res) => {
-    //   try {
-    //     const { slug } = req.params;
-
-    //     // =====================================================
-    //     // VALIDATE SLUG
-    //     // =====================================================
-
-    //     if (!slug || !/^[a-z0-9-]+$/i.test(slug)) {
-    //       return res.status(400).send("Invalid landing page URL");
-    //     }
-
-    //     // =====================================================
-    //     // FIND PAGE
-    //     // =====================================================
-
-    //     const page = await landingPagesCollection.findOne({
-    //       slug,
-    //       status: "published",
-    //     });
-
-    //     // =====================================================
-    //     // PAGE NOT FOUND
-    //     // =====================================================
-
-    //     if (!page) {
-    //       return res.status(404).send(`
-    //     <!DOCTYPE html>
-
-    //     <html>
-    //       <head>
-    //         <meta charset="UTF-8" />
-
-    //         <meta
-    //           name="viewport"
-    //           content="width=device-width, initial-scale=1.0"
-    //         />
-
-    //         <title>Page Not Found</title>
-    //       </head>
-
-    //       <body
-    //         style="
-    //           margin:0;
-    //           min-height:100vh;
-    //           display:flex;
-    //           align-items:center;
-    //           justify-content:center;
-    //           background:#020617;
-    //           color:white;
-    //           font-family:Arial,sans-serif;
-    //         "
-    //       >
-    //         <div
-    //           style="
-    //             text-align:center;
-    //             padding:24px;
-    //           "
-    //         >
-    //           <h1>
-    //             Landing Page Not Found
-    //           </h1>
-
-    //           <p
-    //             style="
-    //               color:#94a3b8;
-    //             "
-    //           >
-    //             The page you're looking for
-    //             doesn't exist.
-    //           </p>
-    //         </div>
-    //       </body>
-    //     </html>
-    //   `);
-    //     }
-
-    //     // =====================================================
-    //     // INCREMENT PAGE VIEW
-    //     // =====================================================
-
-    //     await landingPagesCollection.updateOne(
-    //       {
-    //         _id: page._id,
-    //       },
-    //       {
-    //         $inc: {
-    //           views: 1,
-    //         },
-    //       },
-    //     );
-
-    //     // =====================================================
-    //     // RESPONSE HEADERS
-    //     // =====================================================
-
-    //     res.setHeader("Content-Type", "text/html; charset=utf-8");
-
-    //     res.setHeader("Cache-Control", "public, max-age=60");
-
-    //     // =====================================================
-    //     // SEND LANDING PAGE
-    //     // =====================================================
-
-    //     return res.send(page.html);
-    //   } catch (error) {
-    //     console.error("Landing page render error:", error);
-
-    //     return res.status(500).send("Unable to load landing page");
-    //   }
-    // });
 
     app.post("/generate-ads", async (req, res) => {
       try {
@@ -1681,338 +2097,591 @@ async function run() {
       }
     });
 
-    // no need this Api
+    /* =========================================================
+   CREATE TRACKING CLICK
+========================================================= */
 
-    app.post("/trending-offers", async (req, res) => {
+    app.get("/api/tracking/click", async (req, res) => {
       try {
-        const { country } = req.body;
-        if (!country) {
-          return res.status(400).json({
-            success: false,
-            message: "Country name is required.",
-          });
-        }
+        const {
+          campaignId = null,
+          landingPageId = null,
 
-        // const trendingData = await scrapeAmazonProducts(country);
+          utm_source = null,
+          utm_medium = null,
+          utm_campaign = null,
+          utm_content = null,
+          utm_term = null,
 
-        // const amazonTrendingData = JSON.stringify(trendingData, null, 2);
+          fbclid = null,
+          gclid = null,
+          ttclid = null,
 
-        // console.log("Amazon Trending Data:", amazonTrendingData);
+          ref = null,
+        } = req.query;
 
-        // const tiktokData = await scrapeTikTokProducts();
+        const userAgent = req.headers["user-agent"] || "";
 
-        // const tiktokData = await createTikTokSession()
+        const ip = getClientIp(req);
 
-        // console.log(tiktokData);
+        const clickId = generateTrackingClickId();
 
-        const session = await createTikTokSession({ countryCode: "US" });
+        const referrer = req.headers["referer"] || ref || null;
 
-        console.log("TikTok session created");
+        const clickData = {
+          clickId,
 
-        console.log(session);
+          campaignId,
 
-        const result = await fetchAllTikTokTopAds({
-          countryCode: "US",
-          period: 30,
-          limit: 20,
-          apiHeaders: session.apiHeaders,
-          cookieHeader: session.cookieHeader,
-        });
+          landingPageId,
 
-        console.dir(result, { depth: null });
+          // Traffic source
+          utm: {
+            source: utm_source,
+            medium: utm_medium,
+            campaign: utm_campaign,
+            content: utm_content,
+            term: utm_term,
+          },
 
-        const decisionData = createTikTokDecisionData(result.ads);
+          // Ad platform IDs
+          fbclid,
+          gclid,
+          ttclid,
 
-        // console.log("TikTok Decision Data:");
+          // Visitor
+          ip,
+          userAgent,
+          referrer,
+          device: detectDevice(userAgent),
+          browser: detectBrowser(userAgent),
+          os: detectOS(userAgent),
 
-        // console.dir(decisionData, {
-        //   depth: null,
-        // });
+          // Conversion
+          converted: false,
+          conversionId: null,
 
-        // console.log("TikTok Decision Data created");
+          createdAt: new Date(),
+        };
 
-        // console.log({
-        //   totalAds: decisionData?.summary?.totalAds,
-
-        //   topAds: decisionData?.topAds?.length,
-
-        //   allAds: decisionData?.ads?.length,
-        // });
-
-        // ==========================================
-        // 4. AI Analysis
-        // ==========================================
-
-        const aiIntelligence = await analyzeTikTokAdsWithAI(decisionData);
-
-        console.log("TikTok AI Intelligence created");
-
-        console.dir(aiIntelligence, {
-          depth: null,
-        });
+        await trackingClicksCollection.insertOne(clickData);
 
         return res.status(200).json({
           success: true,
 
-          country,
+          clickId,
 
-          // data: trendingData,
-          // data: decisionData,
+          campaignId,
 
-          data: {
-            summary: decisionData.summary,
+          landingPageId,
 
-            statistics: decisionData.statistics,
-
-            insights: decisionData.insights,
-
-            topAds: decisionData.topAds,
-
-            aiIntelligence,
-
-            ads: decisionData.ads,
-          },
+          createdAt: clickData.createdAt,
         });
       } catch (error) {
-        console.error(
-          "🔥 TRENDING OFFER ERROR:",
-
-          error,
-        );
+        console.error("❌ TRACKING CLICK ERROR:", error);
 
         return res.status(500).json({
           success: false,
-
-          message: "Failed to collect trending offers.",
-
-          error: error.message,
+          error: "Failed to create tracking click",
         });
       }
     });
 
-    app.post("/projects", async (req, res) => {
+    // =========================================================
+    // AFFILIATE TRACKING REDIRECT
+    // =========================================================
+    //
+    // Flow:
+    //
+    // Visitor CTA
+    //     ↓
+    // /api/tracking/redirect?clickId=cl_xxx
+    //     ↓
+    // Validate clickId
+    //     ↓
+    // Find tracking click
+    //     ↓
+    // Find landing page
+    //     ↓
+    // Build affiliate URL
+    //     ↓
+    // 302 Redirect
+    //
+    // =========================================================
+
+    app.get("/api/tracking/redirect", async (req, res) => {
       try {
-        const { name } = req.body;
+        const clickId =
+          typeof req.query.clickId === "string" ? req.query.clickId.trim() : "";
 
-        const result = await projectCollection.insertOne({
-          name,
+        // =====================================================
+        // VALIDATE CLICK ID
+        // =====================================================
 
-          createdAt: new Date(),
-        });
+        if (!clickId || !/^cl_[a-f0-9]{32}$/i.test(clickId)) {
+          return res.status(400).send("Invalid tracking click ID");
+        }
 
-        res.json({
-          success: true,
-          projectId: result.insertedId,
-        });
-      } catch (err) {
-        res.json({
-          success: false,
-        });
-      }
-    });
+        // =====================================================
+        // FIND CLICK
+        // =====================================================
 
-    app.get("/projects", async (req, res) => {
-      const projects = await projectCollection
-        .find()
-        .sort({
-          createdAt: -1,
-        })
-        .toArray();
-
-      res.json(projects);
-    });
-
-    app.get("/project/:id", async (req, res) => {
-      const analyses = await analysisCollection
-
-        .find({
-          projectId: req.params.id,
-        })
-
-        .sort({
-          createdAt: -1,
-        })
-
-        .toArray();
-
-      res.json({
-        success: true,
-        analyses,
-      });
-    });
-
-    app.post("/save-competitor", async (req, res) => {
-      const { competitorId } = req.body;
-
-      const competitor = await competitorCollection.findOne({
-        _id: new ObjectId(competitorId),
-      });
-
-      await savedCompetitorCollection.insertOne({
-        ...competitor,
-
-        savedAt: new Date(),
-      });
-
-      res.json({
-        success: true,
-      });
-    });
-
-    app.post("/favorite-analysis", async (req, res) => {
-      const { analysisId } = req.body;
-
-      await favoriteCollection.insertOne({
-        analysisId,
-
-        createdAt: new Date(),
-      });
-
-      res.json({
-        success: true,
-      });
-    });
-
-    app.post("/workspace", async (req, res) => {
-      const { projectId, title } = req.body;
-
-      const result = await workspaceCollection.insertOne({
-        projectId,
-
-        title,
-
-        hooks: [],
-
-        offers: [],
-
-        ads: [],
-
-        landingPages: [],
-
-        campaigns: [],
-
-        createdAt: new Date(),
-      });
-
-      res.json({
-        success: true,
-        id: result.insertedId,
-      });
-    });
-
-    app.post("/workspace/hook", async (req, res) => {
-      const { workspaceId, hook } = req.body;
-
-      await workspaceCollection.updateOne(
-        {
-          _id: new ObjectId(workspaceId),
-        },
-
-        {
-          $push: {
-            hooks: hook,
-          },
-        },
-      );
-
-      res.json({
-        success: true,
-      });
-    });
-
-    app.post("/workspace/ad", async (req, res) => {
-      const { workspaceId, ad } = req.body;
-
-      await workspaceCollection.updateOne(
-        {
-          _id: new ObjectId(workspaceId),
-        },
-
-        {
-          $push: {
-            ads: ad,
-          },
-        },
-      );
-
-      res.json({
-        success: true,
-      });
-    });
-
-    app.get("/dashboard", async (req, res) => {
-      const totalProjects = await projectCollection.countDocuments();
-
-      const totalAnalysis = await analysisCollection.countDocuments();
-
-      const totalCompetitors = await competitorCollection.countDocuments();
-
-      res.json({
-        totalProjects,
-
-        totalAnalysis,
-
-        totalCompetitors,
-      });
-    });
-
-    app.post("/campaign-builder", async (req, res) => {
-      try {
-        const { product } = req.body;
-
-        const result = await campaignBuilder(ai, product);
-
-        res.json({
-          success: true,
-
-          data: result,
-        });
-      } catch (err) {
-        res.json({
-          success: false,
-        });
-      }
-    });
-
-    app.post("/campaign", async (req, res) => {
-      try {
-        const { product, projectId } = req.body;
-
-        const campaign = await campaignRunner(ai, product);
-
-        await campaignCollection.insertOne({
-          product,
-
-          projectId,
-
-          campaign,
-
-          createdAt: new Date(),
-        });
-
-        await workspaceCollection.updateOne(
+        const click = await trackingClicksCollection.findOne(
           {
-            projectId,
+            clickId,
           },
-
           {
-            $push: {
-              campaigns: campaign,
+            projection: {
+              _id: 1,
+              clickId: 1,
+              campaignId: 1,
+              landingPageId: 1,
+              createdAt: 1,
             },
           },
         );
 
-        res.json({
-          success: true,
+        if (!click) {
+          return res.status(404).send("Tracking click not found");
+        }
 
-          campaign,
+        // =====================================================
+        // VALIDATE LANDING PAGE ID
+        // =====================================================
+
+        if (
+          !click.landingPageId ||
+          !ObjectId.isValid(String(click.landingPageId))
+        ) {
+          console.error("❌ REDIRECT INVALID LANDING PAGE ID:", {
+            clickId,
+            landingPageId: click.landingPageId,
+          });
+
+          return res.status(404).send("Landing page not found");
+        }
+
+        // =====================================================
+        // FIND LANDING PAGE
+        // =====================================================
+
+        const landingPage = await landingPagesCollection.findOne(
+          {
+            _id: new ObjectId(String(click.landingPageId)),
+            status: "published",
+          },
+          {
+            projection: {
+              _id: 1,
+              affiliateLink: 1,
+              trackingParameter: 1,
+            },
+          },
+        );
+
+        if (!landingPage) {
+          return res.status(404).send("Landing page not found");
+        }
+
+        // =====================================================
+        // VALIDATE AFFILIATE LINK
+        // =====================================================
+
+        const affiliateLink =
+          typeof landingPage.affiliateLink === "string"
+            ? landingPage.affiliateLink.trim()
+            : "";
+
+        if (!affiliateLink || !isValidHttpUrl(affiliateLink)) {
+          console.error("❌ INVALID AFFILIATE LINK:", {
+            clickId,
+            landingPageId: click.landingPageId,
+          });
+
+          return res.status(404).send("Affiliate offer is not configured");
+        }
+
+        // =====================================================
+        // BUILD TRACKED AFFILIATE URL
+        // =====================================================
+
+        const trackedAffiliateUrl = buildAffiliateTrackingUrl({
+          affiliateLink,
+          clickId,
+          trackingParameter:
+            landingPage.trackingParameter ||
+            DEFAULT_AFFILIATE_TRACKING_PARAMETER,
         });
-      } catch (err) {
-        res.json({
-          success: false,
-        });
+
+        if (!trackedAffiliateUrl) {
+          return res.status(500).send("Unable to build affiliate tracking URL");
+        }
+
+        // Record the successful outbound affiliate redirect
+        await Promise.all([
+          trackingClicksCollection.updateOne(
+            { clickId },
+            {
+              $set: {
+                affiliateRedirectedAt: new Date(),
+              },
+            },
+          ),
+
+          landingPagesCollection.updateOne(
+            { _id: landingPage._id },
+            {
+              $inc: {
+                clicks: 1,
+              },
+            },
+          ),
+        ]);
+
+        // =====================================================
+        // REDIRECT
+        // =====================================================
+
+        return res.redirect(302, trackedAffiliateUrl);
+      } catch (error) {
+        console.error("❌ AFFILIATE REDIRECT ERROR:", error);
+
+        return res.status(500).send("Unable to process affiliate redirect");
       }
     });
+
+    // no need this api
+
+    // app.post("/trending-offers", async (req, res) => {
+    //   try {
+    //     const { country } = req.body;
+    //     if (!country) {
+    //       return res.status(400).json({
+    //         success: false,
+    //         message: "Country name is required.",
+    //       });
+    //     }
+
+    //     // const trendingData = await scrapeAmazonProducts(country);
+
+    //     // const amazonTrendingData = JSON.stringify(trendingData, null, 2);
+
+    //     // console.log("Amazon Trending Data:", amazonTrendingData);
+
+    //     // const tiktokData = await scrapeTikTokProducts();
+
+    //     // const tiktokData = await createTikTokSession()
+
+    //     // console.log(tiktokData);
+
+    //     const session = await createTikTokSession({ countryCode: "US" });
+
+    //     console.log("TikTok session created");
+
+    //     console.log(session);
+
+    //     const result = await fetchAllTikTokTopAds({
+    //       countryCode: "US",
+    //       period: 30,
+    //       limit: 20,
+    //       apiHeaders: session.apiHeaders,
+    //       cookieHeader: session.cookieHeader,
+    //     });
+
+    //     console.dir(result, { depth: null });
+
+    //     const decisionData = createTikTokDecisionData(result.ads);
+
+    //     // console.log("TikTok Decision Data:");
+
+    //     // console.dir(decisionData, {
+    //     //   depth: null,
+    //     // });
+
+    //     // console.log("TikTok Decision Data created");
+
+    //     // console.log({
+    //     //   totalAds: decisionData?.summary?.totalAds,
+
+    //     //   topAds: decisionData?.topAds?.length,
+
+    //     //   allAds: decisionData?.ads?.length,
+    //     // });
+
+    //     // ==========================================
+    //     // 4. AI Analysis
+    //     // ==========================================
+
+    //     const aiIntelligence = await analyzeTikTokAdsWithAI(decisionData);
+
+    //     console.log("TikTok AI Intelligence created");
+
+    //     console.dir(aiIntelligence, {
+    //       depth: null,
+    //     });
+
+    //     return res.status(200).json({
+    //       success: true,
+
+    //       country,
+
+    //       // data: trendingData,
+    //       // data: decisionData,
+
+    //       data: {
+    //         summary: decisionData.summary,
+
+    //         statistics: decisionData.statistics,
+
+    //         insights: decisionData.insights,
+
+    //         topAds: decisionData.topAds,
+
+    //         aiIntelligence,
+
+    //         ads: decisionData.ads,
+    //       },
+    //     });
+    //   } catch (error) {
+    //     console.error(
+    //       "🔥 TRENDING OFFER ERROR:",
+
+    //       error,
+    //     );
+
+    //     return res.status(500).json({
+    //       success: false,
+
+    //       message: "Failed to collect trending offers.",
+
+    //       error: error.message,
+    //     });
+    //   }
+    // });
+
+    // app.post("/projects", async (req, res) => {
+    //   try {
+    //     const { name } = req.body;
+
+    //     const result = await projectCollection.insertOne({
+    //       name,
+
+    //       createdAt: new Date(),
+    //     });
+
+    //     res.json({
+    //       success: true,
+    //       projectId: result.insertedId,
+    //     });
+    //   } catch (err) {
+    //     res.json({
+    //       success: false,
+    //     });
+    //   }
+    // });
+
+    // app.get("/projects", async (req, res) => {
+    //   const projects = await projectCollection
+    //     .find()
+    //     .sort({
+    //       createdAt: -1,
+    //     })
+    //     .toArray();
+
+    //   res.json(projects);
+    // });
+
+    // app.get("/project/:id", async (req, res) => {
+    //   const analyses = await analysisCollection
+
+    //     .find({
+    //       projectId: req.params.id,
+    //     })
+
+    //     .sort({
+    //       createdAt: -1,
+    //     })
+
+    //     .toArray();
+
+    //   res.json({
+    //     success: true,
+    //     analyses,
+    //   });
+    // });
+
+    // app.post("/save-competitor", async (req, res) => {
+    //   const { competitorId } = req.body;
+
+    //   const competitor = await competitorCollection.findOne({
+    //     _id: new ObjectId(competitorId),
+    //   });
+
+    //   await savedCompetitorCollection.insertOne({
+    //     ...competitor,
+
+    //     savedAt: new Date(),
+    //   });
+
+    //   res.json({
+    //     success: true,
+    //   });
+    // });
+
+    // app.post("/favorite-analysis", async (req, res) => {
+    //   const { analysisId } = req.body;
+
+    //   await favoriteCollection.insertOne({
+    //     analysisId,
+
+    //     createdAt: new Date(),
+    //   });
+
+    //   res.json({
+    //     success: true,
+    //   });
+    // });
+
+    // app.post("/workspace", async (req, res) => {
+    //   const { projectId, title } = req.body;
+
+    //   const result = await workspaceCollection.insertOne({
+    //     projectId,
+
+    //     title,
+
+    //     hooks: [],
+
+    //     offers: [],
+
+    //     ads: [],
+
+    //     landingPages: [],
+
+    //     campaigns: [],
+
+    //     createdAt: new Date(),
+    //   });
+
+    //   res.json({
+    //     success: true,
+    //     id: result.insertedId,
+    //   });
+    // });
+
+    // app.post("/workspace/hook", async (req, res) => {
+    //   const { workspaceId, hook } = req.body;
+
+    //   await workspaceCollection.updateOne(
+    //     {
+    //       _id: new ObjectId(workspaceId),
+    //     },
+
+    //     {
+    //       $push: {
+    //         hooks: hook,
+    //       },
+    //     },
+    //   );
+
+    //   res.json({
+    //     success: true,
+    //   });
+    // });
+
+    // app.post("/workspace/ad", async (req, res) => {
+    //   const { workspaceId, ad } = req.body;
+
+    //   await workspaceCollection.updateOne(
+    //     {
+    //       _id: new ObjectId(workspaceId),
+    //     },
+
+    //     {
+    //       $push: {
+    //         ads: ad,
+    //       },
+    //     },
+    //   );
+
+    //   res.json({
+    //     success: true,
+    //   });
+    // });
+
+    // app.get("/dashboard", async (req, res) => {
+    //   const totalProjects = await projectCollection.countDocuments();
+
+    //   const totalAnalysis = await analysisCollection.countDocuments();
+
+    //   const totalCompetitors = await competitorCollection.countDocuments();
+
+    //   res.json({
+    //     totalProjects,
+
+    //     totalAnalysis,
+
+    //     totalCompetitors,
+    //   });
+    // });
+
+    // app.post("/campaign-builder", async (req, res) => {
+    //   try {
+    //     const { product } = req.body;
+
+    //     const result = await campaignBuilder(ai, product);
+
+    //     res.json({
+    //       success: true,
+
+    //       data: result,
+    //     });
+    //   } catch (err) {
+    //     res.json({
+    //       success: false,
+    //     });
+    //   }
+    // });
+
+    // app.post("/campaign", async (req, res) => {
+    //   try {
+    //     const { product, projectId } = req.body;
+
+    //     const campaign = await campaignRunner(ai, product);
+
+    //     await campaignCollection.insertOne({
+    //       product,
+
+    //       projectId,
+
+    //       campaign,
+
+    //       createdAt: new Date(),
+    //     });
+
+    //     await workspaceCollection.updateOne(
+    //       {
+    //         projectId,
+    //       },
+
+    //       {
+    //         $push: {
+    //           campaigns: campaign,
+    //         },
+    //       },
+    //     );
+
+    //     res.json({
+    //       success: true,
+
+    //       campaign,
+    //     });
+    //   } catch (err) {
+    //     res.json({
+    //       success: false,
+    //     });
+    //   }
+    // });
 
     app.get("/history", async (req, res) => {
       const history = await conversationCollection
