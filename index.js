@@ -95,7 +95,32 @@ function escapeHtmlAttribute(value = "") {
     .replace(/'/g, "&#039;");
 }
 
-function prepareLandingHTML(html, affiliateLink) {
+// function prepareLandingHTML(html, affiliateLink) {
+//   if (!html || typeof html !== "string") {
+//     throw new Error("Invalid landing page HTML");
+//   }
+
+//   if (Buffer.byteLength(html, "utf8") > MAX_LANDING_HTML_SIZE) {
+//     throw new Error("Landing page HTML is too large");
+//   }
+
+//   let finalHTML = html;
+
+//   // Replace affiliate link placeholder
+//   if (affiliateLink) {
+//     finalHTML = finalHTML.replaceAll(
+//       "{{AFFILIATE_LINK}}",
+//       escapeHtmlAttribute(affiliateLink),
+//     );
+//   }
+
+//   // Prevent accidental unresolved placeholder
+//   finalHTML = finalHTML.replaceAll("{{AFFILIATE_LINK}}", "#");
+
+//   return finalHTML;
+// }
+
+function prepareLandingHTML(html, affiliateLink, offerId = null) {
   if (!html || typeof html !== "string") {
     throw new Error("Invalid landing page HTML");
   }
@@ -114,8 +139,18 @@ function prepareLandingHTML(html, affiliateLink) {
     );
   }
 
-  // Prevent accidental unresolved placeholder
+  // Prevent unresolved affiliate link placeholder
   finalHTML = finalHTML.replaceAll("{{AFFILIATE_LINK}}", "#");
+
+  // Attach Offer ID to every tracked CTA
+  if (offerId && /^[a-f0-9]{24}$/i.test(offerId)) {
+    finalHTML = finalHTML.replace(
+      /<a\b([^>]*\bdata-track\s*=\s*(?:"[^"]*"|'[^']*')[^>]*)>/gi,
+      (match, attributes) => {
+        return `<a${attributes} data-offer-id="${offerId}">`;
+      },
+    );
+  }
 
   return finalHTML;
 }
@@ -335,6 +370,7 @@ const CAMPAIGN_ID =
         // IMPORTANT:
         // Always use the current page visit's click ID.
         // Do not use an old ID from localStorage.
+
         clickRequestPromise
           .then((clickId) => {
             if (!clickId) {
@@ -349,6 +385,36 @@ const CAMPAIGN_ID =
               "clickId",
               clickId
             );
+
+            // Send the Offer ID associated with this CTA
+             const offerId = link.getAttribute("data-offer-id");
+
+            if (offerId) {
+               redirectUrl.searchParams.set("offerId", offerId);
+            }
+
+            // Get CTA button information
+const ctaLabel = (
+  link.innerText ||
+  link.getAttribute("aria-label") ||
+  link.title ||
+  "CTA Button"
+)
+  .trim()
+  .replace(/\s+/g, " ")
+  .slice(0, 100);
+
+const ctaId =
+  link.id ||
+  link.getAttribute("data-cta-id") ||
+  "";
+
+// Send CTA information to backend
+redirectUrl.searchParams.set("ctaLabel", ctaLabel);
+
+if (ctaId) {
+  redirectUrl.searchParams.set("ctaId", ctaId);
+}
 
             console.log(
               "AffilAI: Redirecting through tracking API",
@@ -391,272 +457,8 @@ const CAMPAIGN_ID =
   if (html.includes("</body>")) {
     return html.replace("</body>", trackingScript + "\n</body>");
   }
-
   return html + trackingScript;
 }
-
-// function injectTrackingScript(
-//   html,
-//   { campaignId = "", landingPageId = "", affiliateLink = "" } = {},
-// ) {
-//   if (!html || typeof html !== "string") {
-//     return html;
-//   }
-
-//   const apiBaseUrl = process.env.PUBLIC_BASE_URL || "http://localhost:5000";
-
-//   const cleanApiBaseUrl = apiBaseUrl.replace(/\/$/, "");
-
-//   const trackingScript = `
-// <script>
-// (function () {
-//   "use strict";
-
-//   try {
-//     const API_BASE_URL = ${JSON.stringify(cleanApiBaseUrl)};
-//     const CAMPAIGN_ID = ${JSON.stringify(campaignId)};
-//     const LANDING_PAGE_ID = ${JSON.stringify(landingPageId)};
-//     const AFFILIATE_LINK = ${JSON.stringify(affiliateLink)};
-
-//     const REDIRECT_PATH = "/api/tracking/redirect";
-
-//     let clickRequestPromise = null;
-//     let redirectInProgress = false;
-
-//     const params = new URLSearchParams(window.location.search);
-
-//     const trackingParams = {
-//       utm_source: params.get("utm_source"),
-//       utm_medium: params.get("utm_medium"),
-//       utm_campaign: params.get("utm_campaign"),
-//       utm_term: params.get("utm_term"),
-//       utm_content: params.get("utm_content"),
-//       fbclid: params.get("fbclid"),
-//       gclid: params.get("gclid"),
-//       ttclid: params.get("ttclid")
-//     };
-
-//     // -----------------------------------
-//     // 1. Create tracking click
-//     // -----------------------------------
-
-//     function createTrackingClick() {
-//       const trackingUrl = new URL(
-//         API_BASE_URL + "/api/tracking/click"
-//       );
-
-//       if (CAMPAIGN_ID) {
-//         trackingUrl.searchParams.set("campaignId", CAMPAIGN_ID);
-//       }
-
-//       if (LANDING_PAGE_ID) {
-//         trackingUrl.searchParams.set("landingPageId", LANDING_PAGE_ID);
-//       }
-
-//       Object.entries(trackingParams).forEach(([key, value]) => {
-//         if (value) {
-//           trackingUrl.searchParams.set(key, value);
-//         }
-//       });
-
-//       return fetch(trackingUrl.toString(), {
-//         method: "GET",
-//         credentials: "include",
-//         cache: "no-store"
-//       })
-//         .then((response) => {
-//           if (!response.ok) {
-//             throw new Error(
-//               "Tracking API failed: " + response.status
-//             );
-//           }
-
-//           return response.json();
-//         })
-//         .then((data) => {
-//           if (!data || !data.success || !data.clickId) {
-//             throw new Error("Invalid tracking response");
-//           }
-
-//           // Store the latest click ID for debugging.
-//           localStorage.setItem(
-//             "affilai_click_id",
-//             data.clickId
-//           );
-
-//           localStorage.setItem(
-//             "affilai_landing_page_id",
-//             LANDING_PAGE_ID
-//           );
-
-//           if (CAMPAIGN_ID) {
-//             localStorage.setItem(
-//               "affilai_campaign_id",
-//               CAMPAIGN_ID
-//             );
-//           }
-
-//           console.log(
-//             "AffilAI: Tracking click created",
-//             data.clickId
-//           );
-
-//           return data.clickId;
-//         });
-//     }
-
-//     // Create a new click ID for this page visit.
-//     clickRequestPromise = createTrackingClick();
-
-//     // -----------------------------------
-//     // 2. Check affiliate link
-//     // -----------------------------------
-
-//     function isAffiliateLink(element) {
-//       if (!element || !AFFILIATE_LINK) {
-//         return false;
-//       }
-
-//       const href = element.getAttribute("href");
-
-//       if (!href) {
-//         return false;
-//       }
-
-//       try {
-//         const clickedUrl = new URL(
-//           href,
-//           window.location.href
-//         );
-
-//         const affiliateUrl = new URL(
-//           AFFILIATE_LINK,
-//           window.location.href
-//         );
-
-//         return (
-//           clickedUrl.origin === affiliateUrl.origin &&
-//           clickedUrl.pathname === affiliateUrl.pathname
-//         );
-//       } catch (error) {
-//         console.error(
-//           "AffilAI: Invalid affiliate URL",
-//           error
-//         );
-
-//         return false;
-//       }
-//     }
-
-//     // -----------------------------------
-//     // 3. Handle affiliate CTA click
-//     // -----------------------------------
-
-//     document.addEventListener(
-//       "click",
-//       function (event) {
-//         const target = event.target;
-
-//         const link =
-//           target && target.closest
-//             ? target.closest("a")
-//             : null;
-
-//         if (!link) {
-//           return;
-//         }
-
-//         if (redirectInProgress) {
-//           event.preventDefault();
-//           return;
-//         }
-
-//         if (!isAffiliateLink(link)) {
-//           console.log(
-//             "AffilAI: Clicked link is not the configured affiliate link",
-//             {
-//               clickedHref: link.href,
-//               configuredAffiliateLink: AFFILIATE_LINK
-//             }
-//           );
-
-//           return;
-//         }
-
-//         // Stop normal navigation.
-//         event.preventDefault();
-//         event.stopPropagation();
-//         event.stopImmediatePropagation();
-
-//         redirectInProgress = true;
-
-//         console.log(
-//           "AffilAI: Affiliate CTA detected",
-//           link.href
-//         );
-
-//         // IMPORTANT:
-//         // Always use the current page visit's click ID.
-//         // Do not use an old ID from localStorage.
-//         clickRequestPromise
-//           .then((clickId) => {
-//             if (!clickId) {
-//               throw new Error("Missing click ID");
-//             }
-
-//             const redirectUrl = new URL(
-//               API_BASE_URL + REDIRECT_PATH
-//             );
-
-//             redirectUrl.searchParams.set(
-//               "clickId",
-//               clickId
-//             );
-
-//             console.log(
-//               "AffilAI: Redirecting through tracking API",
-//               redirectUrl.toString()
-//             );
-
-//             window.location.assign(
-//               redirectUrl.toString()
-//             );
-//           })
-//           .catch((error) => {
-//             console.error(
-//               "AffilAI: Tracking redirect failed",
-//               error
-//             );
-
-//             // Fallback to original affiliate URL.
-//             window.location.assign(link.href);
-//           });
-//       },
-//       true
-//     );
-
-//     console.log("AffilAI: Tracking script initialized", {
-//       campaignId: CAMPAIGN_ID,
-//       landingPageId: LANDING_PAGE_ID,
-//       affiliateLink: AFFILIATE_LINK
-//     });
-
-//   } catch (error) {
-//     console.error(
-//       "AffilAI: Tracking script initialization failed",
-//       error
-//     );
-//   }
-// })();
-// </script>
-// `;
-
-//   if (html.includes("</body>")) {
-//     return html.replace("</body>", trackingScript + "\n</body>");
-//   }
-
-//   return html + trackingScript;
-// }
 
 function makeImageUrlsAbsolute(html) {
   if (!html || typeof html !== "string") {
@@ -1402,6 +1204,66 @@ async function run() {
       .db("affiliate-ai")
       .collection("tracking-conversions");
 
+    // =====================================================
+    // AFFILIATE NETWORK INTEGRATIONS
+    // =====================================================
+
+    const affiliateNetworksCollection = client
+      .db("affiliate-ai")
+      .collection("affiliate-networks");
+
+    // =====================================================
+    // AFFILIATE OFFER TRACKING
+    // =====================================================
+
+    const trackingOffersCollection = client
+      .db("affiliate-ai")
+      .collection("tracking-offers");
+
+    const trackingLandingPageOffersCollection = client
+      .db("affiliate-ai")
+      .collection("tracking-landing-page-offers");
+
+    // =====================================================
+    // TRACKING LANDING PAGE OFFERS INDEXES
+    // =====================================================
+
+    // Find offers connected to a landing page
+    await trackingLandingPageOffersCollection.createIndex({
+      ownerEmail: 1,
+      landingPageId: 1,
+    });
+
+    // Find landing pages connected to an offer
+    await trackingLandingPageOffersCollection.createIndex({
+      ownerEmail: 1,
+      offerId: 1,
+    });
+
+    // Prevent duplicate offer assignment
+    await trackingLandingPageOffersCollection.createIndex(
+      {
+        ownerEmail: 1,
+        landingPageId: 1,
+        offerId: 1,
+      },
+      {
+        unique: true,
+      },
+    );
+
+    // User-wise network integration lookup
+    await affiliateNetworksCollection.createIndex({
+      email: 1,
+      createdAt: -1,
+    });
+
+    // Unique integration ID
+    await affiliateNetworksCollection.createIndex(
+      { integrationId: 1 },
+      { unique: true },
+    );
+
     // =========================================================
     // TRACKING INDEXES
     // =========================================================
@@ -1444,23 +1306,38 @@ async function run() {
       createdAt: -1,
     });
 
-    const trackingCampaignsCollection = client
-      .db("affiliate-ai")
-      .collection("tracking-campaigns");
-
-    // Campaign indexes
-    await trackingCampaignsCollection.createIndex(
-      { campaignId: 1 },
-      { unique: true },
-    );
-
-    await trackingCampaignsCollection.createIndex({
-      email: 1,
+    // Owner-wise conversion reports
+    await trackingConversionsCollection.createIndex({
+      ownerEmail: 1,
       createdAt: -1,
     });
 
-    await trackingCampaignsCollection.createIndex({
-      landingPageId: 1,
+    // Offer-wise conversion reports
+    await trackingConversionsCollection.createIndex({
+      offerId: 1,
+      createdAt: -1,
+    });
+
+    // =====================================================
+    // TRACKING OFFERS INDEXES
+    // =====================================================
+
+    // Unique Offer ID
+    await trackingOffersCollection.createIndex(
+      { offerId: 1 },
+      { unique: true },
+    );
+
+    // User-wise Offer lookup
+    await trackingOffersCollection.createIndex({
+      ownerEmail: 1,
+      createdAt: -1,
+    });
+
+    // Affiliate Network-wise Offer lookup
+    await trackingOffersCollection.createIndex({
+      integrationId: 1,
+      ownerEmail: 1,
     });
 
     /* =========================================================
@@ -1501,6 +1378,8 @@ async function run() {
           name,
           html,
           affiliateLink = "",
+          networkName = "",
+          productName = "",
           slug: existingSlug = null,
           intent = "",
           email,
@@ -1541,6 +1420,28 @@ async function run() {
             : "AI Landing Page";
 
         // =====================================================
+        // AFFILIATE OFFER DETAILS
+        // =====================================================
+
+        const cleanNetworkName =
+          typeof networkName === "string"
+            ? networkName.trim().slice(0, 100)
+            : "";
+
+        const cleanProductName =
+          typeof productName === "string"
+            ? productName.trim().slice(0, 150)
+            : "";
+
+        // =====================================================
+        // CHECK AFFILIATE OFFER DETAILS
+        // =====================================================
+
+        const shouldCreateOffer =
+          Boolean(affiliateLink.trim()) &&
+          Boolean(cleanNetworkName) &&
+          Boolean(cleanProductName);
+        // =====================================================
         // INTENT
         // =====================================================
 
@@ -1551,13 +1452,113 @@ async function run() {
         // PREPARE HTML
         // =====================================================
 
-        // const finalHTML = prepareLandingHTML(html, affiliateLink);
+        // let finalHTML = prepareLandingHTML(html, affiliateLink);
 
-        let finalHTML = prepareLandingHTML(html, affiliateLink);
+        // finalHTML = makeImageUrlsAbsolute(finalHTML);
 
-        finalHTML = makeImageUrlsAbsolute(finalHTML);
+        let finalHTML = "";
 
         const now = new Date();
+
+        // =====================================================
+        // CREATE / REUSE TRACKING OFFER
+        // =====================================================
+
+        const createOrReuseTrackingOffer = async (landingPageId) => {
+          if (!shouldCreateOffer) return null;
+
+          const ownerEmail = String(email).trim().toLowerCase();
+
+          // Check whether this offer already exists
+          let offer = await trackingOffersCollection.findOne({
+            ownerEmail,
+            networkName: cleanNetworkName,
+            productName: cleanProductName,
+            affiliateLink: affiliateLink.trim(),
+          });
+
+          // Create a new offer if it does not exist
+          if (!offer) {
+            offer = {
+              offerId: new ObjectId().toString(),
+              ownerEmail,
+              integrationId: null,
+              integrationStatus: "not_connected",
+              networkName: cleanNetworkName,
+              productName: cleanProductName,
+              affiliateLink: affiliateLink.trim(),
+              trackingParameter: DEFAULT_AFFILIATE_TRACKING_PARAMETER,
+              status: "active",
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+
+            await trackingOffersCollection.insertOne(offer);
+          }
+
+          // Assign offer to landing page
+          // await trackingLandingPageOffersCollection.updateOne(
+          //   {
+          //     ownerEmail,
+          //     landingPageId: String(landingPageId),
+          //     offerId: offer.offerId,
+          //   },
+          //   {
+          //     $setOnInsert: {
+          //       ownerEmail,
+          //       landingPageId: String(landingPageId),
+          //       offerId: offer.offerId,
+          //       productName: offer.productName,
+          //       networkName: offer.networkName,
+          //       integrationId: null,
+          //       status: "active",
+          //       createdAt: new Date(),
+          //       updatedAt: new Date(),
+          //     },
+          //   },
+          //   { upsert: true },
+          // );
+
+          // Assign offer only when landingPageId is available
+          if (landingPageId) {
+            await trackingLandingPageOffersCollection.updateOne(
+              {
+                ownerEmail,
+                landingPageId: String(landingPageId),
+                offerId: offer.offerId,
+              },
+              {
+                $setOnInsert: {
+                  ownerEmail,
+                  landingPageId: String(landingPageId),
+                  offerId: offer.offerId,
+                  productName: offer.productName,
+                  networkName: offer.networkName,
+                  integrationId: null,
+                  status: "active",
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                },
+              },
+              { upsert: true },
+            );
+          }
+          return offer;
+        };
+
+        // =====================================================
+        // CREATE / REUSE OFFER BEFORE PREPARING HTML
+        // =====================================================
+
+        const offerForHTML = await createOrReuseTrackingOffer(null);
+
+        finalHTML = prepareLandingHTML(
+          html,
+          affiliateLink,
+          offerForHTML?.offerId || null,
+        );
+
+        finalHTML = makeImageUrlsAbsolute(finalHTML);
 
         // =====================================================
         // BASE URL
@@ -1606,15 +1607,36 @@ async function run() {
             },
           );
 
+          // Create or reuse offer and assign it to existing landing page
+          const trackingOffer = await createOrReuseTrackingOffer(
+            existingPage._id.toString(),
+          );
           // Keep the existing slug and public URL unchanged
           const liveURL = `${cleanBaseURL}/${existingPage.slug}`;
+
+          // return res.json({
+          //   success: true,
+          //   action: "updated",
+          //   slug: existingPage.slug,
+          //   intent: cleanIntent,
+          //   url: liveURL,
+          // });
 
           return res.json({
             success: true,
             action: "updated",
             slug: existingPage.slug,
+            landingPageId: existingPage._id.toString(),
             intent: cleanIntent,
             url: liveURL,
+            offer: trackingOffer
+              ? {
+                  offerId: trackingOffer.offerId,
+                  productName: trackingOffer.productName,
+                  networkName: trackingOffer.networkName,
+                  integrationStatus: trackingOffer.integrationStatus,
+                }
+              : null,
           });
         }
 
@@ -1622,8 +1644,13 @@ async function run() {
         // CREATE NEW PAGE
         // =====================================================
 
+        // let slug;
+        // let inserted = false;
+
         let slug;
         let inserted = false;
+        let trackingOffer = null;
+        let landingPageId = null;
 
         // =====================================================
         // GENERATE UNIQUE SLUG
@@ -1636,33 +1663,55 @@ async function run() {
           slug = createPublicLandingSlug(cleanIntent);
 
           try {
-            await landingPagesCollection.insertOne({
+            // await landingPagesCollection.insertOne({
+            //   name: pageName,
+
+            //   slug,
+
+            //   html: finalHTML,
+
+            //   affiliateLink: affiliateLink || "",
+
+            //   // Affiliate tracking configuration
+            //   trackingParameter: DEFAULT_AFFILIATE_TRACKING_PARAMETER,
+
+            //   intent: cleanIntent,
+
+            //   status: "published",
+
+            //   campaignId: null,
+
+            //   // Analytics
+            //   views: 0,
+            //   clicks: 0,
+
+            //   createdAt: now,
+            //   updatedAt: now,
+
+            //   email,
+            // });
+
+            const insertResult = await landingPagesCollection.insertOne({
               name: pageName,
-
               slug,
-
               html: finalHTML,
-
               affiliateLink: affiliateLink || "",
-
-              // Affiliate tracking configuration
               trackingParameter: DEFAULT_AFFILIATE_TRACKING_PARAMETER,
-
               intent: cleanIntent,
-
               status: "published",
-
               campaignId: null,
-
-              // Analytics
               views: 0,
               clicks: 0,
-
               createdAt: now,
               updatedAt: now,
-
               email,
             });
+
+            // Save the newly created landing page ID
+            landingPageId = insertResult.insertedId.toString();
+
+            // Create or reuse offer and assign it to new landing page
+            trackingOffer = await createOrReuseTrackingOffer(landingPageId);
 
             inserted = true;
 
@@ -1698,12 +1747,29 @@ async function run() {
         // SUCCESS RESPONSE
         // =====================================================
 
+        // return res.status(201).json({
+        //   success: true,
+        //   action: "created",
+        //   slug,
+        //   intent: cleanIntent,
+        //   url: liveURL,
+        // });
+
         return res.status(201).json({
           success: true,
           action: "created",
           slug,
+          landingPageId,
           intent: cleanIntent,
           url: liveURL,
+          offer: trackingOffer
+            ? {
+                offerId: trackingOffer.offerId,
+                productName: trackingOffer.productName,
+                networkName: trackingOffer.networkName,
+                integrationStatus: trackingOffer.integrationStatus,
+              }
+            : null,
         });
       } catch (error) {
         console.error("Deploy landing page error:", error);
@@ -2398,23 +2464,22 @@ async function run() {
       }
     });
 
-    /* =========================================================
-   CREATE TRACKING CLICK
-   ========================================================= */
-
     app.get("/api/tracking/click", async (req, res) => {
       try {
         const {
           campaignId = null,
           landingPageId = null,
+
           utm_source = null,
           utm_medium = null,
           utm_campaign = null,
           utm_content = null,
           utm_term = null,
+
           fbclid = null,
           gclid = null,
           ttclid = null,
+
           ref = null,
         } = req.query;
 
@@ -2424,31 +2489,41 @@ async function run() {
 
         const clickId = generateTrackingClickId();
 
-        // Find campaign owner
         let ownerEmail = null;
 
-        if (campaignId) {
-          const campaign = await trackingCampaignsCollection.findOne(
-            { campaignId },
-            { projection: { email: 1, landingPageId: 1 } },
-          );
+        if (!landingPageId || !ObjectId.isValid(String(landingPageId))) {
+          return res.status(400).json({
+            success: false,
+            error: "Invalid landing page ID",
+          });
+        }
 
-          if (!campaign) {
-            return res.status(404).json({
-              success: false,
-              error: "Tracking campaign not found",
-            });
-          }
+        const landingPage = await landingPagesCollection.findOne(
+          {
+            _id: new ObjectId(String(landingPageId)),
+            status: "published",
+          },
+          {
+            projection: {
+              email: 1,
+            },
+          },
+        );
 
-          // Validate that this landing page belongs to this campaign
-          if (String(campaign.landingPageId) !== String(landingPageId)) {
-            return res.status(400).json({
-              success: false,
-              error: "This landing page does not belong to this campaign",
-            });
-          }
+        if (!landingPage) {
+          return res.status(404).json({
+            success: false,
+            error: "Landing page not found",
+          });
+        }
 
-          ownerEmail = campaign.email;
+        ownerEmail = landingPage.email;
+
+        if (!ownerEmail) {
+          return res.status(400).json({
+            success: false,
+            error: "Landing page owner not found",
+          });
         }
 
         const referrer = req.headers["referer"] || ref || null;
@@ -2531,130 +2606,6 @@ async function run() {
       }
     });
 
-    // app.get("/api/tracking/click", async (req, res) => {
-    //   try {
-    //     const {
-    //       campaignId = null,
-    //       landingPageId = null,
-
-    //       utm_source = null,
-    //       utm_medium = null,
-    //       utm_campaign = null,
-    //       utm_content = null,
-    //       utm_term = null,
-
-    //       fbclid = null,
-    //       gclid = null,
-    //       ttclid = null,
-
-    //       ref = null,
-    //     } = req.query;
-
-    //     const userAgent = req.headers["user-agent"] || "";
-
-    //     const ip = getClientIp(req);
-
-    //     const clickId = generateTrackingClickId();
-
-    //     // Find campaign owner
-    //     let ownerEmail = null;
-
-    //     if (campaignId) {
-    //       const campaign = await trackingCampaignsCollection.findOne(
-    //         { campaignId },
-    //         { projection: { email: 1 } },
-    //       );
-
-    //       if (!campaign) {
-    //         return res.status(404).json({
-    //           success: false,
-    //           error: "Tracking campaign not found",
-    //         });
-    //       }
-
-    //       ownerEmail = campaign.email;
-    //     }
-
-    //     const referrer = req.headers["referer"] || ref || null;
-
-    //     const clickData = {
-    //       clickId,
-
-    //       campaignId,
-
-    //       ownerEmail,
-
-    //       landingPageId,
-
-    //       // Traffic source
-    //       utm: {
-    //         source: utm_source,
-    //         medium: utm_medium,
-    //         campaign: utm_campaign,
-    //         content: utm_content,
-    //         term: utm_term,
-    //       },
-
-    //       // Ad platform IDs
-    //       fbclid,
-    //       gclid,
-    //       ttclid,
-
-    //       // Visitor
-    //       ip,
-    //       userAgent,
-    //       referrer,
-    //       device: detectDevice(userAgent),
-    //       browser: detectBrowser(userAgent),
-    //       os: detectOS(userAgent),
-
-    //       // Conversion
-    //       converted: false,
-    //       conversionId: null,
-
-    //       createdAt: new Date(),
-    //     };
-
-    //     await trackingClicksCollection.insertOne(clickData);
-
-    //     if (campaignId && ownerEmail) {
-    //       await trackingCampaignsCollection.updateOne(
-    //         {
-    //           campaignId,
-    //           email: ownerEmail,
-    //         },
-    //         {
-    //           $inc: {
-    //             clicks: 1,
-    //           },
-    //           $set: {
-    //             updatedAt: new Date(),
-    //           },
-    //         },
-    //       );
-    //     }
-
-    //     return res.status(200).json({
-    //       success: true,
-
-    //       clickId,
-
-    //       campaignId,
-
-    //       landingPageId,
-
-    //       createdAt: clickData.createdAt,
-    //     });
-    //   } catch (error) {
-    //     console.error("❌ TRACKING CLICK ERROR:", error);
-
-    //     return res.status(500).json({
-    //       success: false,
-    //       error: "Failed to create tracking click",
-    //     });
-    //   }
-    // });
-
     // =========================================================
     // AFFILIATE TRACKING REDIRECT
     // =========================================================
@@ -2677,10 +2628,27 @@ async function run() {
 
     // =========================================================
 
+    /* =========================================================
+   CREATE AFFILIATE TRACKING CLICK
+========================================================= */
+
     app.get("/api/tracking/redirect", async (req, res) => {
       try {
         const clickId =
           typeof req.query.clickId === "string" ? req.query.clickId.trim() : "";
+
+        const offerId =
+          typeof req.query.offerId === "string" ? req.query.offerId.trim() : "";
+
+        const ctaLabel =
+          typeof req.query.ctaLabel === "string"
+            ? req.query.ctaLabel.trim().slice(0, 100)
+            : "CTA Button";
+
+        const ctaId =
+          typeof req.query.ctaId === "string"
+            ? req.query.ctaId.trim().slice(0, 100)
+            : null;
 
         // =====================================================
         // VALIDATE CLICK ID
@@ -2704,6 +2672,7 @@ async function run() {
               clickId: 1,
               campaignId: 1,
               landingPageId: 1,
+              ownerEmail: 1,
               createdAt: 1,
             },
           },
@@ -2751,13 +2720,54 @@ async function run() {
           return res.status(404).send("Landing page not found");
         }
 
+        // STEP 10.10: VERIFY OFFER ASSIGNMENT
+
+        if (!offerId || !/^[a-f0-9]{24}$/i.test(offerId)) {
+          return res.status(400).send("Invalid offer ID");
+        }
+
+        if (!click.ownerEmail) {
+          return res.status(400).send("Click owner not found");
+        }
+
+        // Verify that this offer is assigned to this landing page
+        const offerAssignment =
+          await trackingLandingPageOffersCollection.findOne({
+            ownerEmail: click.ownerEmail,
+            landingPageId: String(click.landingPageId),
+            offerId,
+            status: "active",
+          });
+
+        if (!offerAssignment) {
+          return res
+            .status(404)
+            .send("Offer is not assigned to this landing page");
+        }
+
+        // Get the actual offer
+        const offer = await trackingOffersCollection.findOne({
+          ownerEmail: click.ownerEmail,
+          offerId,
+          status: "active",
+        });
+
+        if (!offer) {
+          return res.status(404).send("Active affiliate offer not found");
+        }
+
         // =====================================================
         // VALIDATE AFFILIATE LINK
         // =====================================================
 
+        // const affiliateLink =
+        //   typeof landingPage.affiliateLink === "string"
+        //     ? landingPage.affiliateLink.trim()
+        //     : "";
+
         const affiliateLink =
-          typeof landingPage.affiliateLink === "string"
-            ? landingPage.affiliateLink.trim()
+          typeof offer.affiliateLink === "string"
+            ? offer.affiliateLink.trim()
             : "";
 
         if (!affiliateLink || !isValidHttpUrl(affiliateLink)) {
@@ -2776,9 +2786,11 @@ async function run() {
         const trackedAffiliateUrl = buildAffiliateTrackingUrl({
           affiliateLink,
           clickId,
+          // trackingParameter:
+          //   landingPage.trackingParameter ||
+          //   DEFAULT_AFFILIATE_TRACKING_PARAMETER,
           trackingParameter:
-            landingPage.trackingParameter ||
-            DEFAULT_AFFILIATE_TRACKING_PARAMETER,
+            offer.trackingParameter || DEFAULT_AFFILIATE_TRACKING_PARAMETER,
         });
 
         if (!trackedAffiliateUrl) {
@@ -2791,7 +2803,13 @@ async function run() {
             { clickId },
             {
               $set: {
+                offerId: offer.offerId,
+                networkName: offer.networkName,
+                productName: offer.productName,
+                affiliateLink,
                 affiliateRedirectedAt: new Date(),
+                ctaLabel,
+                ctaId,
               },
             },
           ),
@@ -2818,29 +2836,742 @@ async function run() {
       }
     });
 
+    // =====================================================
+    // SAVE AFFILIATE NETWORK INTEGRATION
+    // =====================================================
+
+    app.post("/api/tracking/networks", async (req, res) => {
+      try {
+        const {
+          email,
+          networkName,
+          clickIdParameter,
+          payoutParameter,
+          transactionIdParameter,
+          statusParameter,
+          eventTypeParameter,
+          eventMappings,
+        } = req.body;
+
+        if (!email || !networkName || !clickIdParameter || !payoutParameter) {
+          return res.status(400).json({
+            success: false,
+            error:
+              "Email, network name, click ID parameter and payout parameter are required",
+          });
+        }
+
+        const integrationId = new ObjectId().toString();
+
+        const postbackSecret = generateTrackingClickId().replace(/^cl_/, "");
+
+        const integration = {
+          integrationId,
+          postbackSecret,
+          email: String(email).trim().toLowerCase(),
+          networkName: String(networkName).trim(),
+
+          parameters: {
+            clickId: String(clickIdParameter).trim(),
+            payout: String(payoutParameter).trim(),
+            transactionId: String(
+              transactionIdParameter || "transaction_id",
+            ).trim(),
+            status: String(statusParameter || "status").trim(),
+            eventType: String(eventTypeParameter || "").trim() || null,
+          },
+
+          eventMappings: {
+            lead: ["lead", "signup", "registration"],
+            purchase: ["sale", "purchase"],
+            ...(eventMappings || {}),
+          },
+
+          status: "active",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+
+        await affiliateNetworksCollection.insertOne(integration);
+
+        return res.status(201).json({
+          success: true,
+          message: "Affiliate network integration saved successfully",
+          integration: {
+            integrationId: integration.integrationId,
+            networkName: integration.networkName,
+            parameters: integration.parameters,
+            status: integration.status,
+            postbackUrl: `${req.protocol}://${req.get("host")}/api/tracking/postback?integrationId=${encodeURIComponent(integrationId)}&key=${postbackSecret}`,
+          },
+        });
+      } catch (error) {
+        console.error("Save affiliate network error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to save affiliate network integration",
+        });
+      }
+    });
+
+    // GET USER'S AFFILIATE NETWORK INTEGRATIONS
+    app.get("/api/tracking/networks", async (req, res) => {
+      try {
+        const email =
+          typeof req.query.email === "string"
+            ? req.query.email.trim().toLowerCase()
+            : "";
+
+        if (!email) {
+          return res.status(400).json({
+            success: false,
+            error: "Email is required",
+          });
+        }
+
+        const integrations = await affiliateNetworksCollection
+          .find(
+            { email },
+            {
+              projection: {
+                _id: 0,
+                integrationId: 1,
+                networkName: 1,
+                parameters: 1,
+                eventMappings: 1,
+                status: 1,
+                createdAt: 1,
+                updatedAt: 1,
+              },
+            },
+          )
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        return res.status(200).json({
+          success: true,
+          totalIntegrations: integrations.length,
+          integrations,
+        });
+      } catch (error) {
+        console.error("Get affiliate networks error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to fetch affiliate network integrations",
+        });
+      }
+    });
+
+    // UPDATE AFFILIATE NETWORK INTEGRATION
+    app.put("/api/tracking/networks/:integrationId", async (req, res) => {
+      try {
+        const { integrationId } = req.params;
+
+        const {
+          email,
+          networkName,
+          clickIdParameter,
+          payoutParameter,
+          transactionIdParameter,
+          statusParameter,
+          eventTypeParameter,
+          eventMappings,
+        } = req.body;
+
+        if (!email || !integrationId) {
+          return res.status(400).json({
+            success: false,
+            error: "Email and integration ID are required",
+          });
+        }
+
+        const ownerEmail = String(email).trim().toLowerCase();
+
+        const existingIntegration = await affiliateNetworksCollection.findOne({
+          integrationId,
+          email: ownerEmail,
+        });
+
+        if (!existingIntegration) {
+          return res.status(404).json({
+            success: false,
+            error: "Affiliate network integration not found",
+          });
+        }
+
+        const updateData = {};
+
+        if (networkName !== undefined) {
+          if (!String(networkName).trim()) {
+            return res.status(400).json({
+              success: false,
+              error: "Network name cannot be empty",
+            });
+          }
+
+          updateData.networkName = String(networkName).trim();
+        }
+
+        const parameters = {
+          ...(existingIntegration.parameters || {}),
+        };
+
+        if (clickIdParameter !== undefined) {
+          parameters.clickId = String(clickIdParameter).trim();
+        }
+
+        if (payoutParameter !== undefined) {
+          parameters.payout = String(payoutParameter).trim();
+        }
+
+        if (transactionIdParameter !== undefined) {
+          parameters.transactionId = String(transactionIdParameter).trim();
+        }
+
+        if (statusParameter !== undefined) {
+          parameters.status = String(statusParameter).trim();
+        }
+
+        if (eventTypeParameter !== undefined) {
+          parameters.eventType = String(eventTypeParameter).trim() || null;
+        }
+
+        updateData.parameters = parameters;
+
+        if (eventMappings !== undefined) {
+          updateData.eventMappings = eventMappings;
+        }
+
+        updateData.updatedAt = new Date();
+
+        await affiliateNetworksCollection.updateOne(
+          {
+            integrationId,
+            email: ownerEmail,
+          },
+          {
+            $set: updateData,
+          },
+        );
+
+        return res.status(200).json({
+          success: true,
+          message: "Affiliate network integration updated successfully",
+          integrationId,
+        });
+      } catch (error) {
+        console.error("Update affiliate network error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to update affiliate network integration",
+        });
+      }
+    });
+
+    // =====================================================
+    // CREATE AFFILIATE TRACKING OFFER
+    // =====================================================
+
+    app.post("/api/tracking/offers", async (req, res) => {
+      try {
+        const {
+          email,
+          integrationId,
+          productName,
+          affiliateLink,
+          trackingParameter,
+        } = req.body;
+
+        // 1. Validate required fields
+        if (!email || !integrationId || !productName || !affiliateLink) {
+          return res.status(400).json({
+            success: false,
+            error:
+              "Email, integration ID, product name and affiliate link are required",
+          });
+        }
+
+        const ownerEmail = String(email).trim().toLowerCase();
+
+        // 2. Validate affiliate URL
+        if (!isValidHttpUrl(String(affiliateLink).trim())) {
+          return res.status(400).json({
+            success: false,
+            error: "Invalid affiliate link",
+          });
+        }
+
+        // 3. Find owner's affiliate network integration
+        const integration = await affiliateNetworksCollection.findOne({
+          integrationId: String(integrationId).trim(),
+          email: ownerEmail,
+          status: "active",
+        });
+
+        if (!integration) {
+          return res.status(404).json({
+            success: false,
+            error: "Active affiliate network integration not found",
+          });
+        }
+
+        // 4. Create Offer
+        const offer = {
+          offerId: new ObjectId().toString(),
+
+          ownerEmail,
+
+          integrationId: integration.integrationId,
+          networkName: integration.networkName,
+
+          productName: String(productName).trim(),
+
+          affiliateLink: String(affiliateLink).trim(),
+
+          trackingParameter: normalizeTrackingParameter(trackingParameter),
+
+          status: "active",
+
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+
+        // 5. Save Offer
+        await trackingOffersCollection.insertOne(offer);
+
+        // 6. Response
+        return res.status(201).json({
+          success: true,
+          message: "Affiliate offer created successfully",
+
+          offer: {
+            offerId: offer.offerId,
+            productName: offer.productName,
+            networkName: offer.networkName,
+            integrationId: offer.integrationId,
+            trackingParameter: offer.trackingParameter,
+            status: offer.status,
+            createdAt: offer.createdAt,
+          },
+        });
+      } catch (error) {
+        console.error("Create affiliate offer error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to create affiliate offer",
+        });
+      }
+    });
+
+    // =====================================================
+    // GET ALL AFFILIATE TRACKING OFFERS
+    // =====================================================
+
+    app.get("/api/tracking/offers", async (req, res) => {
+      try {
+        const email =
+          typeof req.query.email === "string"
+            ? req.query.email.trim().toLowerCase()
+            : "";
+
+        if (!email) {
+          return res.status(400).json({
+            success: false,
+            error: "Email is required",
+          });
+        }
+
+        // Find offers belonging to this user
+        const offers = await trackingOffersCollection
+          .find({
+            ownerEmail: email,
+          })
+          .sort({
+            createdAt: -1,
+          })
+          .project({
+            _id: 0,
+            offerId: 1,
+            productName: 1,
+            networkName: 1,
+            integrationId: 1,
+            affiliateLink: 1,
+            trackingParameter: 1,
+            status: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          })
+          .toArray();
+
+        return res.status(200).json({
+          success: true,
+          totalOffers: offers.length,
+          offers,
+        });
+      } catch (error) {
+        console.error("Get affiliate offers error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to fetch affiliate offers",
+        });
+      }
+    });
+
+    // =====================================================
+    // UPDATE AFFILIATE TRACKING OFFER
+    // =====================================================
+
+    app.put("/api/tracking/offers/:offerId", async (req, res) => {
+      try {
+        const { offerId } = req.params;
+
+        const { email, productName, affiliateLink, trackingParameter, status } =
+          req.body;
+
+        const ownerEmail =
+          typeof email === "string" ? email.trim().toLowerCase() : "";
+
+        if (!ownerEmail || !offerId) {
+          return res.status(400).json({
+            success: false,
+            error: "Email and offer ID are required",
+          });
+        }
+
+        // Find existing offer owned by this user
+        const existingOffer = await trackingOffersCollection.findOne({
+          offerId,
+          ownerEmail,
+        });
+
+        if (!existingOffer) {
+          return res.status(404).json({
+            success: false,
+            error: "Offer not found",
+          });
+        }
+
+        const updateFields = {};
+
+        // Update product name
+        if (productName !== undefined) {
+          if (typeof productName !== "string" || !productName.trim()) {
+            return res.status(400).json({
+              success: false,
+              error: "Invalid product name",
+            });
+          }
+
+          updateFields.productName = productName.trim();
+        }
+
+        // Update affiliate link
+        if (affiliateLink !== undefined) {
+          if (
+            typeof affiliateLink !== "string" ||
+            !isValidHttpUrl(affiliateLink.trim())
+          ) {
+            return res.status(400).json({
+              success: false,
+              error: "Invalid affiliate link",
+            });
+          }
+
+          updateFields.affiliateLink = affiliateLink.trim();
+        }
+
+        // Update tracking parameter
+        if (trackingParameter !== undefined) {
+          updateFields.trackingParameter =
+            normalizeTrackingParameter(trackingParameter);
+        }
+
+        // Update offer status
+        if (status !== undefined) {
+          if (!["active", "inactive"].includes(status)) {
+            return res.status(400).json({
+              success: false,
+              error: "Status must be active or inactive",
+            });
+          }
+
+          updateFields.status = status;
+        }
+
+        if (Object.keys(updateFields).length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: "No fields provided to update",
+          });
+        }
+
+        updateFields.updatedAt = new Date();
+
+        await trackingOffersCollection.updateOne(
+          {
+            offerId,
+            ownerEmail,
+          },
+          {
+            $set: updateFields,
+          },
+        );
+
+        const updatedOffer = await trackingOffersCollection.findOne(
+          {
+            offerId,
+            ownerEmail,
+          },
+          {
+            projection: {
+              _id: 0,
+              offerId: 1,
+              productName: 1,
+              networkName: 1,
+              integrationId: 1,
+              affiliateLink: 1,
+              trackingParameter: 1,
+              status: 1,
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          },
+        );
+
+        return res.status(200).json({
+          success: true,
+          message: "Affiliate offer updated successfully",
+          offer: updatedOffer,
+        });
+      } catch (error) {
+        console.error("Update affiliate offer error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to update affiliate offer",
+        });
+      }
+    });
+
+    // =====================================================
+    // ASSIGN OFFER TO LANDING PAGE
+    // =====================================================
+
+    app.post("/api/tracking/landing-page-offers", async (req, res) => {
+      try {
+        const { email, landingPageId, offerId } = req.body;
+
+        const ownerEmail =
+          typeof email === "string" ? email.trim().toLowerCase() : "";
+
+        if (!ownerEmail || !landingPageId || !offerId) {
+          return res.status(400).json({
+            success: false,
+            error: "Email, landing page ID and offer ID are required",
+          });
+        }
+
+        // Validate Landing Page ID
+        if (!ObjectId.isValid(String(landingPageId))) {
+          return res.status(400).json({
+            success: false,
+            error: "Invalid landing page ID",
+          });
+        }
+
+        const normalizedLandingPageId = String(landingPageId);
+
+        // Find Landing Page owned by this user
+        const landingPage = await landingPagesCollection.findOne({
+          _id: new ObjectId(normalizedLandingPageId),
+          email: ownerEmail,
+        });
+
+        if (!landingPage) {
+          return res.status(404).json({
+            success: false,
+            error: "Landing page not found",
+          });
+        }
+
+        // Find active Offer owned by this user
+        const offer = await trackingOffersCollection.findOne({
+          offerId: String(offerId).trim(),
+          ownerEmail,
+          status: "active",
+        });
+
+        if (!offer) {
+          return res.status(404).json({
+            success: false,
+            error: "Active offer not found",
+          });
+        }
+
+        // Save Landing Page - Offer relationship
+        const assignment = {
+          ownerEmail,
+          landingPageId: normalizedLandingPageId,
+          offerId: offer.offerId,
+          productName: offer.productName,
+          networkName: offer.networkName,
+          integrationId: offer.integrationId,
+          status: "active",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+
+        await trackingLandingPageOffersCollection.insertOne(assignment);
+
+        return res.status(201).json({
+          success: true,
+          message: "Offer assigned to landing page successfully",
+          assignment: {
+            landingPageId: normalizedLandingPageId,
+            offerId: offer.offerId,
+            productName: offer.productName,
+            networkName: offer.networkName,
+          },
+        });
+      } catch (error) {
+        // Duplicate assignment protection
+        if (error.code === 11000) {
+          return res.status(409).json({
+            success: false,
+            error: "This offer is already assigned to this landing page",
+          });
+        }
+
+        console.error("Assign offer error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to assign offer to landing page",
+        });
+      }
+    });
+
+    // =====================================================
+    // GET OFFERS ASSIGNED TO A LANDING PAGE
+    // =====================================================
+
+    app.get("/api/tracking/landing-page-offers", async (req, res) => {
+      try {
+        const email =
+          typeof req.query.email === "string"
+            ? req.query.email.trim().toLowerCase()
+            : "";
+
+        const landingPageId =
+          typeof req.query.landingPageId === "string"
+            ? req.query.landingPageId.trim()
+            : "";
+
+        if (!email || !landingPageId) {
+          return res.status(400).json({
+            success: false,
+            error: "Email and landing page ID are required",
+          });
+        }
+
+        if (!ObjectId.isValid(landingPageId)) {
+          return res.status(400).json({
+            success: false,
+            error: "Invalid landing page ID",
+          });
+        }
+
+        // Verify Landing Page ownership
+        const landingPage = await landingPagesCollection.findOne({
+          _id: new ObjectId(landingPageId),
+          email,
+        });
+
+        if (!landingPage) {
+          return res.status(404).json({
+            success: false,
+            error: "Landing page not found",
+          });
+        }
+
+        // Get assigned offers
+        const assignments = await trackingLandingPageOffersCollection
+          .find({
+            ownerEmail: email,
+            landingPageId,
+            status: "active",
+          })
+          .sort({
+            createdAt: -1,
+          })
+          .project({
+            _id: 0,
+            landingPageId: 1,
+            offerId: 1,
+            productName: 1,
+            networkName: 1,
+            integrationId: 1,
+            status: 1,
+            createdAt: 1,
+          })
+          .toArray();
+
+        return res.status(200).json({
+          success: true,
+          totalOffers: assignments.length,
+          offers: assignments,
+        });
+      } catch (error) {
+        console.error("Get assigned offers error:", error);
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to fetch assigned offers",
+        });
+      }
+    });
+
     /* =========================================================
    AFFILIATE CONVERSION POSTBACK (S2S)
-========================================================= */
+   ========================================================= */
 
     app.get("/api/tracking/postback", async (req, res) => {
       try {
-        const {
-          clickId,
-          payout = "0",
-          txid,
-          status = "approved",
-          key,
-        } = req.query;
+        // 1. Get integration information
+        const { integrationId, key } = req.query;
 
-        // 1. Validate postback secret
+        if (typeof integrationId !== "string" || typeof key !== "string") {
+          return res.status(400).json({
+            success: false,
+            error: "Integration ID and key are required",
+          });
+        }
 
-        const secret = process.env.TRACKING_POSTBACK_SECRET;
+        // 2. Find affiliate network integration
+        const integration = await affiliateNetworksCollection.findOne({
+          integrationId,
+          status: "active",
+        });
+
+        if (!integration) {
+          return res.status(404).json({
+            success: false,
+            error: "Affiliate network integration not found or inactive",
+          });
+        }
+
+        // 3. Validate integration-specific secret
+        const savedSecret = integration.postbackSecret;
 
         if (
-          !secret ||
-          typeof key !== "string" ||
-          key.length !== secret.length ||
-          !crypto.timingSafeEqual(Buffer.from(key), Buffer.from(secret))
+          !savedSecret ||
+          key.length !== savedSecret.length ||
+          !crypto.timingSafeEqual(Buffer.from(key), Buffer.from(savedSecret))
         ) {
           return res.status(401).json({
             success: false,
@@ -2848,8 +3579,92 @@ async function run() {
           });
         }
 
-        // 2. Validate Click ID
+        // 4. Read dynamic parameter names
+        const parameters = integration.parameters || {};
 
+        const getParameter = (parameterName) => {
+          if (!parameterName) return undefined;
+
+          const value = req.query[parameterName];
+
+          return typeof value === "string" ? value : undefined;
+        };
+
+        const clickId = getParameter(parameters.clickId);
+        const payout = getParameter(parameters.payout) ?? "0";
+        const txid = getParameter(parameters.transactionId);
+        const status = getParameter(parameters.status) ?? "approved";
+
+        // Dynamic Event Type
+        const rawEventType = parameters.eventType
+          ? getParameter(parameters.eventType)
+          : null;
+
+        const normalizedEventType = rawEventType
+          ? rawEventType.toLowerCase().trim()
+          : "unknown";
+
+        // const allowedEventTypes = [
+        //   "lead",
+        //   "sale",
+        //   "purchase",
+        //   "registration",
+        //   "signup",
+        //   "install",
+        //   "deposit",
+        //   "unknown",
+        // ];
+
+        // if (!allowedEventTypes.includes(normalizedEventType)) {
+        //   return res.status(400).json({
+        //     success: false,
+        //     error: "Unsupported event type",
+        //   });
+        // }
+
+        // const eventType =
+        //   normalizedEventType === "purchase" ? "sale" : normalizedEventType;
+
+        // 1. Get event mappings
+
+        // const eventMappings = integration.eventMappings || {};
+
+        // Validate event using this integration's mappings
+        const eventMappings = integration.eventMappings || {};
+
+        const allowedEventTypes = [
+          ...(eventMappings.lead || []),
+          ...(eventMappings.purchase || []),
+        ].map((event) => String(event).toLowerCase().trim());
+
+        if (
+          normalizedEventType !== "unknown" &&
+          !allowedEventTypes.includes(normalizedEventType)
+        ) {
+          return res.status(400).json({
+            success: false,
+            error: "Unsupported event type for this network",
+          });
+        }
+
+        const leadEvents = (eventMappings.lead || []).map((event) =>
+          String(event).toLowerCase().trim(),
+        );
+
+        const purchaseEvents = (eventMappings.purchase || []).map((event) =>
+          String(event).toLowerCase().trim(),
+        );
+
+        // 2. Classify incoming event
+        let eventCategory = "unknown";
+
+        if (leadEvents.includes(normalizedEventType)) {
+          eventCategory = "lead";
+        } else if (purchaseEvents.includes(normalizedEventType)) {
+          eventCategory = "purchase";
+        }
+
+        // 5. Validate click ID
         if (
           typeof clickId !== "string" ||
           !/^cl_[a-f0-9]{32}$/i.test(clickId)
@@ -2860,8 +3675,7 @@ async function run() {
           });
         }
 
-        // 3. Validate payout
-
+        // 6. Validate payout
         const revenue = Number(payout);
 
         if (!Number.isFinite(revenue) || revenue < 0) {
@@ -2871,8 +3685,7 @@ async function run() {
           });
         }
 
-        // 4. Validate transaction ID
-
+        // 7. Validate transaction ID
         const transactionId =
           typeof txid === "string" && txid.trim() ? txid.trim() : clickId;
 
@@ -2883,9 +3696,19 @@ async function run() {
           });
         }
 
-        // 5. Normalize conversion status
-
+        // 8. Normalize conversion status
         const rawStatus = String(status).toLowerCase().trim();
+
+        // const statusMap = {
+        //   approved: "approved",
+        //   confirmed: "approved",
+        //   sale: "approved",
+        //   lead: "approved",
+        //   pending: "pending",
+        //   declined: "declined",
+        //   rejected: "declined",
+        //   cancelled: "declined",
+        // };
 
         const statusMap = {
           approved: "approved",
@@ -2905,8 +3728,7 @@ async function run() {
           });
         }
 
-        // 6. Find original tracking click
-
+        // 9. Find original tracking click
         const click = await trackingClicksCollection.findOne({
           clickId,
         });
@@ -2918,10 +3740,53 @@ async function run() {
           });
         }
 
+        // 10. Verify click ownership
+        if (
+          !click.ownerEmail ||
+          click.ownerEmail.toLowerCase() !== integration.email.toLowerCase()
+        ) {
+          return res.status(403).json({
+            success: false,
+            error: "This click does not belong to this integration owner",
+          });
+        }
+
+        // STEP 10.17: VERIFY OFFER OWNERSHIP AND INTEGRATION
+
+        if (!click.offerId) {
+          return res.status(400).json({
+            success: false,
+            error: "No affiliate offer is associated with this click",
+          });
+        }
+
+        const linkedOffer = await trackingOffersCollection.findOne({
+          ownerEmail: click.ownerEmail,
+          offerId: click.offerId,
+          status: "active",
+        });
+
+        if (!linkedOffer) {
+          return res.status(404).json({
+            success: false,
+            error: "Associated affiliate offer not found or inactive",
+          });
+        }
+
+        // If the offer has a connected integration, verify it
+        if (
+          linkedOffer.integrationId &&
+          linkedOffer.integrationId !== integrationId
+        ) {
+          return res.status(403).json({
+            success: false,
+            error: "This integration is not connected to the clicked offer",
+          });
+        }
+
         const now = new Date();
 
-        // 7. Find existing conversion
-
+        // 11. Find existing conversion
         const conversionFilter = {
           clickId,
           transactionId,
@@ -2929,6 +3794,24 @@ async function run() {
 
         const existingConversion =
           await trackingConversionsCollection.findOne(conversionFilter);
+
+        // Check exact duplicate postback
+        if (
+          existingConversion &&
+          existingConversion.integrationId === integrationId &&
+          existingConversion.status === conversionStatus &&
+          Number(existingConversion.payout || 0) === revenue &&
+          existingConversion.eventType === normalizedEventType &&
+          existingConversion.eventCategory === eventCategory
+        ) {
+          return res.status(200).json({
+            success: true,
+            duplicate: true,
+            message: "Duplicate postback ignored. No update required.",
+            conversionId: existingConversion.conversionId,
+            transactionId,
+          });
+        }
 
         const oldRevenue =
           existingConversion?.status === "approved"
@@ -2943,15 +3826,44 @@ async function run() {
           existingConversion?.conversionId ||
           `cv_${crypto.randomBytes(16).toString("hex")}`;
 
-        // 8. Save or update conversion
+        // 12. Save or update conversion
+        // const conversionData = {
+        //   conversionId,
+        //   clickId,
+        //   transactionId,
+        //   integrationId,
+        //   eventType: normalizedEventType,
+        //   eventCategory,
+        //   networkName: integration.networkName,
+        //   campaignId: click.campaignId || null,
+        //   landingPageId: click.landingPageId || null,
+        //   ownerEmail: click.ownerEmail,
+        //   payout: revenue,
+        //   status: conversionStatus,
+        //   trafficSource: click.utm?.source || null,
+        //   updatedAt: now,
+        // };
+
+        // 12. Save or update conversion
 
         const conversionData = {
           conversionId,
           clickId,
           transactionId,
+          integrationId,
+
+          // Offer information from original click
+          offerId: click.offerId || null,
+          networkName: click.networkName || integration.networkName,
+          productName: click.productName || null,
+
+          eventType: normalizedEventType,
+          eventCategory,
+
           campaignId: click.campaignId || null,
           landingPageId: click.landingPageId || null,
-          ownerEmail: click.ownerEmail || null,
+          ownerEmail: click.ownerEmail,
+
           payout: revenue,
           status: conversionStatus,
           trafficSource: click.utm?.source || null,
@@ -2981,8 +3893,7 @@ async function run() {
           }
         }
 
-        // 9. Update original click
-
+        // 13. Update original click
         await trackingClicksCollection.updateOne(
           { clickId },
           {
@@ -2995,8 +3906,7 @@ async function run() {
           },
         );
 
-        // 10. Update campaign statistics
-
+        // 14. Update campaign statistics
         if (click.campaignId) {
           const campaignUpdate = {
             $set: {
@@ -3020,19 +3930,20 @@ async function run() {
           await trackingCampaignsCollection.updateOne(
             {
               campaignId: click.campaignId,
-              ...(click.ownerEmail ? { email: click.ownerEmail } : {}),
+              email: click.ownerEmail,
             },
             campaignUpdate,
           );
         }
 
-        // 11. Success response
-
+        // 15. Success response
         return res.status(200).json({
           success: true,
           message: "Conversion tracked successfully",
           conversion: {
             conversionId,
+            integrationId,
+            networkName: integration.networkName,
             clickId,
             transactionId,
             payout: revenue,
@@ -3040,7 +3951,7 @@ async function run() {
           },
         });
       } catch (error) {
-        console.error("CONVERSION POSTBACK ERROR:", error);
+        console.error("DYNAMIC CONVERSION POSTBACK ERROR:", error);
 
         return res.status(500).json({
           success: false,
@@ -3048,518 +3959,6 @@ async function run() {
         });
       }
     });
-
-    // =========================================================
-    // CREATE TRACKING CAMPAIGN
-    // =========================================================
-
-    app.post("/api/tracking/campaigns", async (req, res) => {
-      try {
-        const {
-          name,
-          email,
-          landingPageId,
-          trafficSource,
-          costModel = "CPC",
-        } = req.body;
-
-        // Validate required fields
-        if (!name || !email || !landingPageId || !trafficSource) {
-          return res.status(400).json({
-            success: false,
-            error: "Name, email, landingPageId and trafficSource are required",
-          });
-        }
-
-        // Validate landing page ID
-        if (!ObjectId.isValid(String(landingPageId))) {
-          return res.status(400).json({
-            success: false,
-            error: "Invalid landing page ID",
-          });
-        }
-
-        // Find user's published landing page
-        const landingPage = await landingPagesCollection.findOne({
-          _id: new ObjectId(String(landingPageId)),
-          email: email.trim().toLowerCase(),
-          status: "published",
-        });
-
-        if (!landingPage) {
-          return res.status(404).json({
-            success: false,
-            error: "Published landing page not found",
-          });
-        }
-
-        // Generate unique campaign ID
-        const campaignId = "cmp_" + crypto.randomBytes(16).toString("hex");
-
-        const now = new Date();
-
-        const campaignData = {
-          campaignId,
-
-          name: name.trim(),
-
-          email: email.trim().toLowerCase(),
-
-          landingPageId: landingPage._id.toString(),
-
-          trafficSource: trafficSource.trim(),
-
-          costModel,
-
-          status: "active",
-
-          clicks: 0,
-
-          conversions: 0,
-
-          cost: 0,
-
-          revenue: 0,
-
-          createdAt: now,
-
-          updatedAt: now,
-        };
-
-        await trackingCampaignsCollection.insertOne(campaignData);
-
-        return res.status(201).json({
-          success: true,
-          message: "Tracking campaign created successfully",
-          campaign: campaignData,
-        });
-      } catch (error) {
-        console.error("CREATE TRACKING CAMPAIGN ERROR:", error);
-
-        return res.status(500).json({
-          success: false,
-          error: "Failed to create tracking campaign",
-        });
-      }
-    });
-
-    app.post("/api/tracking/campaigns/:campaignId/url", async (req, res) => {
-      try {
-        const { campaignId } = req.params;
-        const {
-          email,
-          utm_source,
-          utm_medium,
-          utm_campaign,
-          utm_content,
-          utm_term,
-        } = req.body;
-
-        if (!email || !campaignId) {
-          return res.status(400).json({
-            success: false,
-            error: "Email and campaign ID are required",
-          });
-        }
-
-        // Find campaign owned by this user
-        const campaign = await trackingCampaignsCollection.findOne({
-          campaignId,
-          email: email.trim().toLowerCase(),
-        });
-
-        if (!campaign) {
-          return res.status(404).json({
-            success: false,
-            error: "Tracking campaign not found",
-          });
-        }
-
-        // Find associated landing page
-        const landingPage = await landingPagesCollection.findOne({
-          _id: new ObjectId(campaign.landingPageId),
-          email: email.trim().toLowerCase(),
-          status: "published",
-        });
-
-        if (!landingPage) {
-          return res.status(404).json({
-            success: false,
-            error: "Published landing page not found",
-          });
-        }
-
-        const baseUrl = (
-          process.env.PUBLIC_BASE_URL || `http://localhost:${PORT || 5000}`
-        ).replace(/\/$/, "");
-
-        const trackingUrl = new URL(`${baseUrl}/${landingPage.slug}`);
-
-        // Campaign ID
-        trackingUrl.searchParams.set("campaignId", campaignId);
-
-        // UTM parameters
-        if (utm_source) trackingUrl.searchParams.set("utm_source", utm_source);
-        if (utm_medium) trackingUrl.searchParams.set("utm_medium", utm_medium);
-        if (utm_campaign)
-          trackingUrl.searchParams.set("utm_campaign", utm_campaign);
-        if (utm_content)
-          trackingUrl.searchParams.set("utm_content", utm_content);
-        if (utm_term) trackingUrl.searchParams.set("utm_term", utm_term);
-
-        return res.status(200).json({
-          success: true,
-          message: "Tracking URL generated successfully",
-          trackingUrl: trackingUrl.toString(),
-          campaignId,
-          landingPage: {
-            id: landingPage._id.toString(),
-            name: landingPage.name,
-            slug: landingPage.slug,
-          },
-        });
-      } catch (error) {
-        console.error("GENERATE TRACKING URL ERROR:", error);
-
-        return res.status(500).json({
-          success: false,
-          error: "Failed to generate tracking URL",
-        });
-      }
-    });
-
-    // no need this api
-
-    // app.post("/trending-offers", async (req, res) => {
-    //   try {
-    //     const { country } = req.body;
-    //     if (!country) {
-    //       return res.status(400).json({
-    //         success: false,
-    //         message: "Country name is required.",
-    //       });
-    //     }
-
-    //     // const trendingData = await scrapeAmazonProducts(country);
-
-    //     // const amazonTrendingData = JSON.stringify(trendingData, null, 2);
-
-    //     // console.log("Amazon Trending Data:", amazonTrendingData);
-
-    //     // const tiktokData = await scrapeTikTokProducts();
-
-    //     // const tiktokData = await createTikTokSession()
-
-    //     // console.log(tiktokData);
-
-    //     const session = await createTikTokSession({ countryCode: "US" });
-
-    //     console.log("TikTok session created");
-
-    //     console.log(session);
-
-    //     const result = await fetchAllTikTokTopAds({
-    //       countryCode: "US",
-    //       period: 30,
-    //       limit: 20,
-    //       apiHeaders: session.apiHeaders,
-    //       cookieHeader: session.cookieHeader,
-    //     });
-
-    //     console.dir(result, { depth: null });
-
-    //     const decisionData = createTikTokDecisionData(result.ads);
-
-    //     // console.log("TikTok Decision Data:");
-
-    //     // console.dir(decisionData, {
-    //     //   depth: null,
-    //     // });
-
-    //     // console.log("TikTok Decision Data created");
-
-    //     // console.log({
-    //     //   totalAds: decisionData?.summary?.totalAds,
-
-    //     //   topAds: decisionData?.topAds?.length,
-
-    //     //   allAds: decisionData?.ads?.length,
-    //     // });
-
-    //     // ==========================================
-    //     // 4. AI Analysis
-    //     // ==========================================
-
-    //     const aiIntelligence = await analyzeTikTokAdsWithAI(decisionData);
-
-    //     console.log("TikTok AI Intelligence created");
-
-    //     console.dir(aiIntelligence, {
-    //       depth: null,
-    //     });
-
-    //     return res.status(200).json({
-    //       success: true,
-
-    //       country,
-
-    //       // data: trendingData,
-    //       // data: decisionData,
-
-    //       data: {
-    //         summary: decisionData.summary,
-
-    //         statistics: decisionData.statistics,
-
-    //         insights: decisionData.insights,
-
-    //         topAds: decisionData.topAds,
-
-    //         aiIntelligence,
-
-    //         ads: decisionData.ads,
-    //       },
-    //     });
-    //   } catch (error) {
-    //     console.error(
-    //       "🔥 TRENDING OFFER ERROR:",
-
-    //       error,
-    //     );
-
-    //     return res.status(500).json({
-    //       success: false,
-
-    //       message: "Failed to collect trending offers.",
-
-    //       error: error.message,
-    //     });
-    //   }
-    // });
-
-    // app.post("/projects", async (req, res) => {
-    //   try {
-    //     const { name } = req.body;
-
-    //     const result = await projectCollection.insertOne({
-    //       name,
-
-    //       createdAt: new Date(),
-    //     });
-
-    //     res.json({
-    //       success: true,
-    //       projectId: result.insertedId,
-    //     });
-    //   } catch (err) {
-    //     res.json({
-    //       success: false,
-    //     });
-    //   }
-    // });
-
-    // app.get("/projects", async (req, res) => {
-    //   const projects = await projectCollection
-    //     .find()
-    //     .sort({
-    //       createdAt: -1,
-    //     })
-    //     .toArray();
-
-    //   res.json(projects);
-    // });
-
-    // app.get("/project/:id", async (req, res) => {
-    //   const analyses = await analysisCollection
-
-    //     .find({
-    //       projectId: req.params.id,
-    //     })
-
-    //     .sort({
-    //       createdAt: -1,
-    //     })
-
-    //     .toArray();
-
-    //   res.json({
-    //     success: true,
-    //     analyses,
-    //   });
-    // });
-
-    // app.post("/save-competitor", async (req, res) => {
-    //   const { competitorId } = req.body;
-
-    //   const competitor = await competitorCollection.findOne({
-    //     _id: new ObjectId(competitorId),
-    //   });
-
-    //   await savedCompetitorCollection.insertOne({
-    //     ...competitor,
-
-    //     savedAt: new Date(),
-    //   });
-
-    //   res.json({
-    //     success: true,
-    //   });
-    // });
-
-    // app.post("/favorite-analysis", async (req, res) => {
-    //   const { analysisId } = req.body;
-
-    //   await favoriteCollection.insertOne({
-    //     analysisId,
-
-    //     createdAt: new Date(),
-    //   });
-
-    //   res.json({
-    //     success: true,
-    //   });
-    // });
-
-    // app.post("/workspace", async (req, res) => {
-    //   const { projectId, title } = req.body;
-
-    //   const result = await workspaceCollection.insertOne({
-    //     projectId,
-
-    //     title,
-
-    //     hooks: [],
-
-    //     offers: [],
-
-    //     ads: [],
-
-    //     landingPages: [],
-
-    //     campaigns: [],
-
-    //     createdAt: new Date(),
-    //   });
-
-    //   res.json({
-    //     success: true,
-    //     id: result.insertedId,
-    //   });
-    // });
-
-    // app.post("/workspace/hook", async (req, res) => {
-    //   const { workspaceId, hook } = req.body;
-
-    //   await workspaceCollection.updateOne(
-    //     {
-    //       _id: new ObjectId(workspaceId),
-    //     },
-
-    //     {
-    //       $push: {
-    //         hooks: hook,
-    //       },
-    //     },
-    //   );
-
-    //   res.json({
-    //     success: true,
-    //   });
-    // });
-
-    // app.post("/workspace/ad", async (req, res) => {
-    //   const { workspaceId, ad } = req.body;
-
-    //   await workspaceCollection.updateOne(
-    //     {
-    //       _id: new ObjectId(workspaceId),
-    //     },
-
-    //     {
-    //       $push: {
-    //         ads: ad,
-    //       },
-    //     },
-    //   );
-
-    //   res.json({
-    //     success: true,
-    //   });
-    // });
-
-    // app.get("/dashboard", async (req, res) => {
-    //   const totalProjects = await projectCollection.countDocuments();
-
-    //   const totalAnalysis = await analysisCollection.countDocuments();
-
-    //   const totalCompetitors = await competitorCollection.countDocuments();
-
-    //   res.json({
-    //     totalProjects,
-
-    //     totalAnalysis,
-
-    //     totalCompetitors,
-    //   });
-    // });
-
-    // app.post("/campaign-builder", async (req, res) => {
-    //   try {
-    //     const { product } = req.body;
-
-    //     const result = await campaignBuilder(ai, product);
-
-    //     res.json({
-    //       success: true,
-
-    //       data: result,
-    //     });
-    //   } catch (err) {
-    //     res.json({
-    //       success: false,
-    //     });
-    //   }
-    // });
-
-    // app.post("/campaign", async (req, res) => {
-    //   try {
-    //     const { product, projectId } = req.body;
-
-    //     const campaign = await campaignRunner(ai, product);
-
-    //     await campaignCollection.insertOne({
-    //       product,
-
-    //       projectId,
-
-    //       campaign,
-
-    //       createdAt: new Date(),
-    //     });
-
-    //     await workspaceCollection.updateOne(
-    //       {
-    //         projectId,
-    //       },
-
-    //       {
-    //         $push: {
-    //           campaigns: campaign,
-    //         },
-    //       },
-    //     );
-
-    //     res.json({
-    //       success: true,
-
-    //       campaign,
-    //     });
-    //   } catch (err) {
-    //     res.json({
-    //       success: false,
-    //     });
-    //   }
-    // });
 
     app.get("/history", async (req, res) => {
       const history = await conversationCollection
